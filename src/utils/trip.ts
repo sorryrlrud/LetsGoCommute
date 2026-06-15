@@ -4,6 +4,7 @@ import type {
   PauseRange,
   Segment,
   TripRecord,
+  TransportMode,
   ValidationResult,
 } from '../types/trip';
 import { calculateDistanceMeters } from './distance';
@@ -14,19 +15,43 @@ export function calculatePausedDuration(pauseRanges: PauseRange[]): number {
   return pauseRanges.reduce((total, range) => total + Math.max(0, range.durationMs), 0);
 }
 
-export function buildSegmentsFromCheckpoints(checkpoints: Checkpoint[]): Segment[] {
+export function createSegmentFromCheckpoints(
+  fromCheckpoint: Checkpoint,
+  toCheckpoint: Checkpoint,
+  transportMode: TransportMode | null = null,
+): Segment {
+  return {
+    id: generateId(),
+    fromCheckpointId: fromCheckpoint.id,
+    toCheckpointId: toCheckpoint.id,
+    startedAt: fromCheckpoint.recordedAt,
+    endedAt: toCheckpoint.recordedAt,
+    durationMs: calculateTotalDuration(fromCheckpoint.recordedAt, toCheckpoint.recordedAt),
+    transportMode,
+    memo: '',
+  };
+}
+
+export function buildSegmentsFromCheckpoints(
+  checkpoints: Checkpoint[],
+  existingSegments: Segment[] = [],
+): Segment[] {
   return checkpoints.slice(1).map((checkpoint, index) => {
     const previous = checkpoints[index];
+    const existingSegment = existingSegments.find(
+      (segment) =>
+        segment.fromCheckpointId === previous.id && segment.toCheckpointId === checkpoint.id,
+    );
 
     return {
-      id: generateId(),
+      id: existingSegment?.id ?? generateId(),
       fromCheckpointId: previous.id,
       toCheckpointId: checkpoint.id,
       startedAt: previous.recordedAt,
       endedAt: checkpoint.recordedAt,
       durationMs: calculateTotalDuration(previous.recordedAt, checkpoint.recordedAt),
-      transportMode: null,
-      memo: '',
+      transportMode: existingSegment?.transportMode ?? null,
+      memo: existingSegment?.memo ?? '',
     };
   });
 }

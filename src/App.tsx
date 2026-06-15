@@ -34,6 +34,7 @@ import type {
   RecordingStatus,
   Segment,
   TripRecord,
+  TransportMode,
 } from './types/trip';
 import { checkpointTypeLabels, transportModeLabels } from './types/trip';
 import { formatDate, formatDateTime, formatTime, generateDefaultTripName } from './utils/date';
@@ -42,6 +43,7 @@ import { generateId } from './utils/id';
 import {
   buildSegmentsFromCheckpoints,
   calculatePausedDuration,
+  createSegmentFromCheckpoints,
   findSimilarTrips,
   validateTripBeforeSave,
 } from './utils/trip';
@@ -72,6 +74,14 @@ interface ConfirmState {
   confirmLabel?: string;
   tone?: 'primary' | 'danger';
   onConfirm: () => void;
+}
+
+interface CheckpointPromptState {
+  checkpointId: string;
+  segmentId: string;
+  name: string;
+  type: CheckpointType;
+  transportMode: TransportMode | null;
 }
 
 const checkpointTypeOptions = Object.keys(checkpointTypeLabels) as Exclude<
@@ -229,6 +239,8 @@ function App() {
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
   const [comparisonTargetId, setComparisonTargetId] = useState<string | null>(null);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
+  const [checkpointPrompt, setCheckpointPrompt] = useState<CheckpointPromptState | null>(null);
+  const [showCheckpointEditor, setShowCheckpointEditor] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [storageError, setStorageError] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
@@ -386,6 +398,8 @@ function App() {
       lastSavedPointAtRef.current = new Date(point.recordedAt).getTime();
       setCurrentTrip(trip);
       setActivePauseStartedAt(null);
+      setCheckpointPrompt(null);
+      setShowCheckpointEditor(false);
       setRecordingStatus('recording');
       setView('recording');
       showNotice('출발! GPS 기록을 시작했습니다.');
@@ -395,18 +409,11 @@ function App() {
   }
 
   function confirmCheckpoint() {
-    requestConfirmation({
-      title: '체크포인트를 기록할까요?',
-      description: '현재 위치와 시간이 저장됩니다.',
-      confirmLabel: '체크!',
-      onConfirm: () => {
-        void addCheckpoint();
-      },
-    });
+    void addCheckpoint();
   }
 
   async function addCheckpoint() {
-    setConfirmState(null);
+    setCheckpointPrompt(null);
 
     if (!currentTripRef.current) {
       return;
@@ -414,30 +421,76 @@ function App() {
 
     try {
       const point = await requestFreshPosition();
+      const activeTrip = currentTripRef.current;
+
+      if (!activeTrip) {
+        return;
+      }
+
+      const previousCheckpoint = activeTrip.checkpoints.at(-1);
+
+      if (!previousCheckpoint) {
+        return;
+      }
+
+      const checkpoint = createCheckpoint(
+        point,
+        activeTrip.checkpoints.length,
+        null,
+        `체크포인트 ${activeTrip.checkpoints.length + 1}`,
+      );
+      const segment = createSegmentFromCheckpoints(previousCheckpoint, checkpoint);
+
       setCurrentTrip((trip) => {
-        if (!trip) {
+        if (!trip || trip.id !== activeTrip.id) {
           return trip;
         }
-
-        const checkpoint = createCheckpoint(
-          point,
-          trip.checkpoints.length,
-          null,
-          `체크포인트 ${trip.checkpoints.length + 1}`,
-        );
 
         return {
           ...trip,
           points: [...trip.points, point],
           checkpoints: [...trip.checkpoints, checkpoint],
+          segments: [...trip.segments, segment],
           updatedAt: point.recordedAt,
         };
       });
+      setCheckpointPrompt({
+        checkpointId: checkpoint.id,
+        segmentId: segment.id,
+        name: checkpoint.name,
+        type: checkpoint.type,
+        transportMode: segment.transportMode,
+      });
       lastSavedPointAtRef.current = new Date(point.recordedAt).getTime();
-      showNotice('체크포인트 통과!');
+      showNotice('체크포인트 통과! 방금 구간을 바로 정리할 수 있습니다.');
     } catch (error) {
       showNotice(error instanceof Error ? error.message : '체크포인트 위치를 확인하지 못했습니다.');
     }
+  }
+
+  function updateCheckpointPrompt(patch: Partial<CheckpointPromptState>) {
+    setCheckpointPrompt((prompt) => (prompt ? { ...prompt, ...patch } : prompt));
+  }
+
+  function saveCheckpointPrompt() {
+    if (!checkpointPrompt) {
+      return;
+    }
+
+    updateCheckpoint(checkpointPrompt.checkpointId, {
+      name: checkpointPrompt.name,
+      type: checkpointPrompt.type,
+    });
+    updateSegment(checkpointPrompt.segmentId, {
+      transportMode: checkpointPrompt.transportMode,
+    });
+    setCheckpointPrompt(null);
+    showNotice('체크포인트 정보를 저장했습니다.');
+  }
+
+  function skipCheckpointPrompt() {
+    setCheckpointPrompt(null);
+    showNotice('나중에 편집할 수 있도록 남겨뒀습니다.');
   }
 
   function confirmPause() {
@@ -533,7 +586,7 @@ function App() {
 
       const endCheckpoint = createCheckpoint(point, trip.checkpoints.length, 'end', '도착지');
       const checkpoints = [...trip.checkpoints, endCheckpoint];
-      const segments = buildSegmentsFromCheckpoints(checkpoints);
+      const segments = buildSegmentsFromCheckpoints(checkpoints, trip.segments);
       const pausedDurationMs = calculatePausedDuration(pauseRanges);
       const totalDurationMs = calculateTotalDuration(trip.startedAt, endedAt);
       const finishedTrip: TripRecord = {
@@ -550,6 +603,7 @@ function App() {
 
       setCurrentTrip(finishedTrip);
       setActivePauseStartedAt(null);
+      setCheckpointPrompt(null);
       setRecordingStatus('finished');
       setView('summary');
       showNotice('도착! 요약을 확인해주세요.');
@@ -568,35 +622,13 @@ function App() {
         setConfirmState(null);
         setCurrentTrip(null);
         setActivePauseStartedAt(null);
+        setCheckpointPrompt(null);
+        setShowCheckpointEditor(false);
         setRecordingStatus('idle');
         setView('home');
         showNotice('임시 기록을 삭제했습니다.');
       },
     });
-  }
-
-  function updateTripName(name: string) {
-    setCurrentTrip((trip) =>
-      trip
-        ? {
-            ...trip,
-            name,
-            updatedAt: new Date().toISOString(),
-          }
-        : trip,
-    );
-  }
-
-  function updateTripMemo(memo: string) {
-    setCurrentTrip((trip) =>
-      trip
-        ? {
-            ...trip,
-            memo,
-            updatedAt: new Date().toISOString(),
-          }
-        : trip,
-    );
   }
 
   function updateCheckpoint(
@@ -654,6 +686,8 @@ function App() {
       await loadTrips();
       setCurrentTrip(tripToSave);
       setSelectedTripId(tripToSave.id);
+      setCheckpointPrompt(null);
+      setShowCheckpointEditor(false);
       setRecordingStatus('saved');
       setView('detail');
       showNotice('구간 기록 저장 완료!');
@@ -843,7 +877,7 @@ function App() {
           <Metric label="GPS 포인트" value={`${currentTrip.points.length}개`} />
         </div>
         {renderGpsStatus()}
-        <div className="bottom-controls">
+        <div className={`bottom-controls ${recordingStatus === 'paused' ? 'paused' : ''}`}>
           {recordingStatus === 'paused' ? (
             <button className="primary-button" onClick={resumeRecording} type="button">
               <RotateCcw aria-hidden="true" />
@@ -892,6 +926,7 @@ function App() {
             className="primary-button"
             onClick={() => {
               setRecordingStatus('editing');
+              setShowCheckpointEditor(false);
               setView('edit');
             }}
             type="button"
@@ -917,87 +952,14 @@ function App() {
       <section className="detail-layout">
         <div className="section-title">
           <span className="pill loud">구간 기록 갱신</span>
-          <h1>체크포인트와 이동수단 입력</h1>
+          <h1>구간별 이동수단 입력</h1>
         </div>
-
-        <section className="panel form-panel">
-          <label>
-            기록 이름
-            <input
-              onChange={(event) => updateTripName(event.target.value)}
-              value={currentTrip.name}
-            />
-          </label>
-          <label>
-            전체 기록 메모
-            <textarea
-              onChange={(event) => updateTripMemo(event.target.value)}
-              placeholder="오늘 이동에 대한 메모"
-              rows={3}
-              value={currentTrip.memo}
-            />
-          </label>
-        </section>
-
-        <section className="panel form-panel">
-          <h2>체크포인트 이름</h2>
-          <div className="editor-list">
-            {currentTrip.checkpoints.map((checkpoint) => (
-              <article className="editor-item" key={checkpoint.id}>
-                <div className="editor-heading">
-                  <span className="number-badge">{checkpoint.order + 1}</span>
-                  <strong>{formatTime(checkpoint.recordedAt)}</strong>
-                </div>
-                <label>
-                  이름
-                  <input
-                    onChange={(event) =>
-                      updateCheckpoint(checkpoint.id, { name: event.target.value })
-                    }
-                    placeholder="체크포인트 이름"
-                    value={checkpoint.name}
-                  />
-                </label>
-                <label>
-                  유형
-                  <select
-                    onChange={(event) =>
-                      updateCheckpoint(checkpoint.id, {
-                        type: event.target.value
-                          ? (event.target.value as CheckpointType)
-                          : null,
-                      })
-                    }
-                    value={checkpoint.type ?? ''}
-                  >
-                    <option value="">선택 안 함</option>
-                    {checkpointTypeOptions.map((type) => (
-                      <option key={type} value={type}>
-                        {checkpointTypeLabels[type]}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  메모
-                  <input
-                    onChange={(event) =>
-                      updateCheckpoint(checkpoint.id, { memo: event.target.value })
-                    }
-                    placeholder="체크포인트 메모"
-                    value={checkpoint.memo}
-                  />
-                </label>
-              </article>
-            ))}
-          </div>
-        </section>
 
         <section className="panel form-panel">
           <h2>구간별 이동수단</h2>
           <div className="editor-list">
             {currentTrip.segments.map((segment, index) => (
-              <article className="editor-item" key={segment.id}>
+              <article className="editor-item compact" key={segment.id}>
                 <div className="editor-heading">
                   <span className="number-badge">{index + 1}</span>
                   <strong>{getSegmentLabel(segment, currentTrip.checkpoints)}</strong>
@@ -1011,18 +973,77 @@ function App() {
                     value={segment.transportMode}
                   />
                 </label>
-                <label>
-                  구간 메모
-                  <input
-                    onChange={(event) => updateSegment(segment.id, { memo: event.target.value })}
-                    placeholder="구간 메모"
-                    value={segment.memo}
-                  />
-                </label>
               </article>
             ))}
           </div>
         </section>
+
+        <div className="button-row editor-tools">
+          <button
+            className="secondary-button"
+            onClick={() => setShowCheckpointEditor((visible) => !visible)}
+            type="button"
+          >
+            <Pencil aria-hidden="true" />
+            {showCheckpointEditor ? '체크포인트 접기' : '체크포인트 편집'}
+          </button>
+        </div>
+
+        {showCheckpointEditor ? (
+          <section className="panel form-panel">
+            <h2>체크포인트 편집</h2>
+            <div className="editor-list">
+              {currentTrip.checkpoints.map((checkpoint) => (
+                <article className="editor-item" key={checkpoint.id}>
+                  <div className="editor-heading">
+                    <span className="number-badge">{checkpoint.order + 1}</span>
+                    <strong>{formatTime(checkpoint.recordedAt)}</strong>
+                  </div>
+                  <label>
+                    이름
+                    <input
+                      onChange={(event) =>
+                        updateCheckpoint(checkpoint.id, { name: event.target.value })
+                      }
+                      placeholder="체크포인트 이름"
+                      value={checkpoint.name}
+                    />
+                  </label>
+                  <label>
+                    유형
+                    <select
+                      onChange={(event) =>
+                        updateCheckpoint(checkpoint.id, {
+                          type: event.target.value
+                            ? (event.target.value as CheckpointType)
+                            : null,
+                        })
+                      }
+                      value={checkpoint.type ?? ''}
+                    >
+                      <option value="">선택 안 함</option>
+                      {checkpointTypeOptions.map((type) => (
+                        <option key={type} value={type}>
+                          {checkpointTypeLabels[type]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    메모
+                    <input
+                      onChange={(event) =>
+                        updateCheckpoint(checkpoint.id, { memo: event.target.value })
+                      }
+                      placeholder="체크포인트 메모"
+                      value={checkpoint.memo}
+                    />
+                  </label>
+                </article>
+              ))}
+            </div>
+          </section>
+        ) : null}
 
         {!validation.valid ? (
           <section className="validation-box" role="alert">
@@ -1334,6 +1355,88 @@ function App() {
     );
   }
 
+  function renderCheckpointPrompt() {
+    if (!checkpointPrompt || !currentTrip) {
+      return null;
+    }
+
+    const checkpoint = currentTrip.checkpoints.find(
+      (item) => item.id === checkpointPrompt.checkpointId,
+    );
+    const segment = currentTrip.segments.find((item) => item.id === checkpointPrompt.segmentId);
+
+    if (!checkpoint || !segment) {
+      return null;
+    }
+
+    return (
+      <div className="dialog-backdrop">
+        <section
+          aria-labelledby="checkpoint-prompt-title"
+          className="confirm-dialog checkpoint-dialog"
+          role="dialog"
+        >
+          <div className="dialog-symbol">
+            <Check aria-hidden="true" />
+          </div>
+          <div>
+            <h2 id="checkpoint-prompt-title">체크포인트 정리</h2>
+            <p>{formatTime(checkpoint.recordedAt)}에 통과한 지점입니다.</p>
+          </div>
+          <div className="prompt-segment">
+            <strong>{getSegmentLabel(segment, currentTrip.checkpoints)}</strong>
+            <span>{formatDuration(segment.durationMs)}</span>
+          </div>
+          <div className="prompt-form">
+            <label>
+              구간 이동수단
+              <TransportModeSelect
+                id={`checkpoint-prompt-mode-${segment.id}`}
+                onChange={(transportMode) => updateCheckpointPrompt({ transportMode })}
+                value={checkpointPrompt.transportMode}
+              />
+            </label>
+            <label>
+              체크포인트 이름
+              <input
+                onChange={(event) => updateCheckpointPrompt({ name: event.target.value })}
+                placeholder="체크포인트 이름"
+                value={checkpointPrompt.name}
+              />
+            </label>
+            <label>
+              체크포인트 유형
+              <select
+                onChange={(event) =>
+                  updateCheckpointPrompt({
+                    type: event.target.value ? (event.target.value as CheckpointType) : null,
+                  })
+                }
+                value={checkpointPrompt.type ?? ''}
+              >
+                <option value="">선택 안 함</option>
+                {checkpointTypeOptions.map((type) => (
+                  <option key={type} value={type}>
+                    {checkpointTypeLabels[type]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="dialog-actions">
+            <button className="secondary-button" onClick={skipCheckpointPrompt} type="button">
+              나중에!
+            </button>
+            <button className="primary-button" onClick={saveCheckpointPrompt} type="button">
+              <Save aria-hidden="true" />
+              입력 저장
+            </button>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
   function renderGpsStatus() {
     return (
       <div className={`gps-status ${gpsStatus.tone}`}>
@@ -1403,6 +1506,7 @@ function App() {
 
       {notice ? <div className="toast">{notice}</div> : null}
       {renderContent()}
+      {renderCheckpointPrompt()}
       <ConfirmDialog
         description={confirmState?.description ?? ''}
         onCancel={() => setConfirmState(null)}

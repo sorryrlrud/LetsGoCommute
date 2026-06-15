@@ -447,27 +447,25 @@ button:disabled {
 }
 
 .bottom-controls {
-  background: rgb(244 247 243 / 88%);
-  backdrop-filter: blur(12px);
-  bottom: 0;
+  align-items: stretch;
   display: grid;
-  gap: 10px;
-  grid-template-columns: 1fr 1fr 1fr;
-  left: 0;
-  padding: 12px max(12px, env(safe-area-inset-left)) calc(12px + env(safe-area-inset-bottom))
-    max(12px, env(safe-area-inset-right));
-  position: sticky;
-  z-index: 500;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 0;
+}
+
+.bottom-controls.paused {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .bottom-controls .primary-button,
 .bottom-controls .secondary-button,
 .bottom-controls .finish-button {
-  min-height: 58px;
-}
-
-.bottom-controls .primary-button:first-child:last-of-type {
-  grid-column: span 2;
+  font-size: 0.92rem;
+  gap: 6px;
+  min-height: 42px;
+  padding: 0 10px;
+  width: 100%;
 }
 
 .panel {
@@ -520,6 +518,11 @@ textarea {
   display: grid;
   gap: 12px;
   padding: 14px;
+}
+
+.editor-item.compact {
+  gap: 10px;
+  padding: 12px;
 }
 
 .editor-heading,
@@ -580,6 +583,10 @@ textarea {
   bottom: 0;
   position: sticky;
   z-index: 400;
+}
+
+.editor-tools {
+  justify-content: flex-end;
 }
 
 .trip-card {
@@ -722,6 +729,11 @@ textarea {
   width: min(100%, 420px);
 }
 
+.checkpoint-dialog {
+  max-width: 460px;
+  width: min(100%, 460px);
+}
+
 .confirm-dialog h2,
 .confirm-dialog p {
   margin: 0;
@@ -744,6 +756,30 @@ textarea {
 
 .dialog-symbol svg {
   color: #fb3b5f;
+}
+
+.prompt-form,
+.prompt-form label,
+.prompt-segment {
+  display: grid;
+  gap: 8px;
+}
+
+.prompt-form label {
+  color: #17211f;
+  font-weight: 900;
+}
+
+.prompt-segment {
+  background: #f9fbf7;
+  border: 2px dashed #95a39f;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.prompt-segment span {
+  color: #5d6864;
+  font-size: 0.9rem;
 }
 
 .inline-error {
@@ -808,11 +844,11 @@ textarea {
   }
 
   .bottom-controls {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .bottom-controls .primary-button:first-child:last-of-type {
-    grid-column: auto;
+  .bottom-controls.paused {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .trip-card-stats {
