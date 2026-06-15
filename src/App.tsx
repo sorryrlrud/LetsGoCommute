@@ -32,12 +32,14 @@ import type {
   GpsPoint,
   PauseRange,
   RecordingStatus,
+  SavedCheckpointPlace,
   Segment,
   TripRecord,
   TransportMode,
 } from './types/trip';
 import { checkpointTypeLabels, transportModeLabels } from './types/trip';
 import { formatDate, formatDateTime, formatTime, generateDefaultTripName } from './utils/date';
+import { calculateDistanceMeters } from './utils/distance';
 import { formatDelta, formatDuration, calculateTotalDuration } from './utils/duration';
 import { generateId } from './utils/id';
 import {
@@ -51,6 +53,7 @@ import './App.css';
 
 const APP_VERSION = '0.1.0';
 const GPS_SAVE_INTERVAL_MS = 10_000;
+const CHECKPOINT_PLACE_MATCH_RADIUS_METERS = 100;
 
 type AppView =
   | 'home'
@@ -82,6 +85,9 @@ interface CheckpointPromptState {
   name: string;
   type: CheckpointType;
   transportMode: TransportMode | null;
+  savePlace: boolean;
+  matchedPlaceId: string | null;
+  matchedPlaceDistanceMeters: number | null;
 }
 
 const checkpointTypeOptions = Object.keys(checkpointTypeLabels) as Exclude<
@@ -206,6 +212,18 @@ function getSegmentLabel(segment: Segment, checkpoints: Checkpoint[]) {
   return `${from?.name || '출발 체크'} → ${to?.name || '도착 체크'}`;
 }
 
+function findCheckpointPlaceMatch(point: GpsPoint, places: SavedCheckpointPlace[]) {
+  const candidates = places
+    .map((place) => ({
+      place,
+      distanceMeters: calculateDistanceMeters(point, place),
+    }))
+    .filter((candidate) => candidate.distanceMeters <= CHECKPOINT_PLACE_MATCH_RADIUS_METERS)
+    .sort((a, b) => a.distanceMeters - b.distanceMeters);
+
+  return candidates[0] ?? null;
+}
+
 function getLivePausedDuration(trip: TripRecord | null, activePauseStartedAt: string | null, now: number) {
   if (!trip) {
     return 0;
@@ -233,6 +251,7 @@ function App() {
   const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>('idle');
   const [currentTrip, setCurrentTrip] = useState<TripRecord | null>(null);
   const [trips, setTrips] = useState<TripRecord[]>([]);
+  const [checkpointPlaces, setCheckpointPlaces] = useState<SavedCheckpointPlace[]>([]);
   const [currentPosition, setCurrentPosition] = useState<GpsPoint | null>(null);
   const [gpsStatus, setGpsStatus] = useState<GpsStatus>(() => getInitialGpsStatus());
   const [activePauseStartedAt, setActivePauseStartedAt] = useState<string | null>(null);
@@ -246,6 +265,7 @@ function App() {
   const [now, setNow] = useState(Date.now());
 
   const currentTripRef = useRef<TripRecord | null>(currentTrip);
+  const checkpointPlacesRef = useRef<SavedCheckpointPlace[]>(checkpointPlaces);
   const recordingStatusRef = useRef<RecordingStatus>(recordingStatus);
   const activePauseStartedAtRef = useRef<string | null>(activePauseStartedAt);
   const lastSavedPointAtRef = useRef<number>(0);
@@ -265,6 +285,10 @@ function App() {
   }, [currentTrip]);
 
   useEffect(() => {
+    checkpointPlacesRef.current = checkpointPlaces;
+  }, [checkpointPlaces]);
+
+  useEffect(() => {
     recordingStatusRef.current = recordingStatus;
   }, [recordingStatus]);
 
@@ -279,6 +303,7 @@ function App() {
 
   useEffect(() => {
     void loadTrips();
+    void loadCheckpointPlaces();
   }, []);
 
   useEffect(() => {
@@ -332,6 +357,15 @@ function App() {
       setTrips(await storageAdapter.getAllTrips());
     } catch (error) {
       setStorageError(error instanceof Error ? error.message : 'IndexedDB 저장소를 열지 못했습니다.');
+    }
+  }
+
+  async function loadCheckpointPlaces() {
+    try {
+      setStorageError(null);
+      setCheckpointPlaces(await storageAdapter.getAllCheckpointPlaces());
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : '체크포인트 이력을 열지 못했습니다.');
     }
   }
 
@@ -433,11 +467,12 @@ function App() {
         return;
       }
 
+      const matchedPlace = findCheckpointPlaceMatch(point, checkpointPlacesRef.current);
       const checkpoint = createCheckpoint(
         point,
         activeTrip.checkpoints.length,
-        null,
-        `체크포인트 ${activeTrip.checkpoints.length + 1}`,
+        matchedPlace?.place.type ?? null,
+        matchedPlace?.place.name ?? `체크포인트 ${activeTrip.checkpoints.length + 1}`,
       );
       const segment = createSegmentFromCheckpoints(previousCheckpoint, checkpoint);
 
@@ -460,6 +495,9 @@ function App() {
         name: checkpoint.name,
         type: checkpoint.type,
         transportMode: segment.transportMode,
+        savePlace: true,
+        matchedPlaceId: matchedPlace?.place.id ?? null,
+        matchedPlaceDistanceMeters: matchedPlace?.distanceMeters ?? null,
       });
       lastSavedPointAtRef.current = new Date(point.recordedAt).getTime();
       showNotice('체크포인트 통과! 방금 구간을 바로 정리할 수 있습니다.');
@@ -472,10 +510,50 @@ function App() {
     setCheckpointPrompt((prompt) => (prompt ? { ...prompt, ...patch } : prompt));
   }
 
-  function saveCheckpointPrompt() {
+  async function saveCheckpointPlaceFromPrompt(
+    prompt: CheckpointPromptState,
+    checkpoint: Checkpoint,
+  ) {
+    const name = prompt.name.trim();
+
+    if (name.length === 0) {
+      return;
+    }
+
+    const existingPlace = prompt.matchedPlaceId
+      ? checkpointPlacesRef.current.find((place) => place.id === prompt.matchedPlaceId)
+      : null;
+    const nowIso = new Date().toISOString();
+    const place: SavedCheckpointPlace = {
+      id: existingPlace?.id ?? generateId(),
+      name,
+      type: prompt.type,
+      lat: checkpoint.lat,
+      lng: checkpoint.lng,
+      accuracy: checkpoint.accuracy,
+      createdAt: existingPlace?.createdAt ?? nowIso,
+      updatedAt: nowIso,
+      lastUsedAt: nowIso,
+      usedCount: (existingPlace?.usedCount ?? 0) + 1,
+    };
+
+    await storageAdapter.saveCheckpointPlace(place);
+    setCheckpointPlaces((places) =>
+      [place, ...places.filter((item) => item.id !== place.id)].sort((a, b) =>
+        b.lastUsedAt.localeCompare(a.lastUsedAt),
+      ),
+    );
+  }
+
+  async function saveCheckpointPrompt() {
     if (!checkpointPrompt) {
       return;
     }
+
+    const prompt = checkpointPrompt;
+    const checkpoint = currentTripRef.current?.checkpoints.find(
+      (item) => item.id === prompt.checkpointId,
+    );
 
     updateCheckpoint(checkpointPrompt.checkpointId, {
       name: checkpointPrompt.name,
@@ -484,8 +562,18 @@ function App() {
     updateSegment(checkpointPrompt.segmentId, {
       transportMode: checkpointPrompt.transportMode,
     });
-    setCheckpointPrompt(null);
-    showNotice('체크포인트 정보를 저장했습니다.');
+
+    try {
+      if (prompt.savePlace && checkpoint) {
+        await saveCheckpointPlaceFromPrompt(prompt, checkpoint);
+      }
+
+      setCheckpointPrompt(null);
+      showNotice(prompt.savePlace ? '체크포인트 정보와 장소 이력을 저장했습니다.' : '체크포인트 정보를 저장했습니다.');
+    } catch (error) {
+      setCheckpointPrompt(null);
+      showNotice(error instanceof Error ? error.message : '장소 이력 저장에 실패했습니다.');
+    }
   }
 
   function skipCheckpointPrompt() {
@@ -748,7 +836,9 @@ function App() {
 
     try {
       await storageAdapter.clearAllTrips();
+      await storageAdapter.clearCheckpointPlaces();
       setTrips([]);
+      setCheckpointPlaces([]);
       setSelectedTripId(null);
       setComparisonTargetId(null);
       showNotice('전체 데이터를 삭제했습니다.');
@@ -866,17 +956,6 @@ function App() {
           points={currentTrip.points}
           height="430px"
         />
-        <TimerDisplay
-          pausedDurationMs={livePausedDuration}
-          segmentDurationMs={liveSegmentDuration}
-          totalDurationMs={liveTotalDuration}
-        />
-        <div className="recording-metrics">
-          <Metric label="기록된 이동 시간" value={formatDuration(liveRecordedDuration)} />
-          <Metric label="체크포인트 수" value={`${currentTrip.checkpoints.length}개`} />
-          <Metric label="GPS 포인트" value={`${currentTrip.points.length}개`} />
-        </div>
-        {renderGpsStatus()}
         <div className={`bottom-controls ${recordingStatus === 'paused' ? 'paused' : ''}`}>
           {recordingStatus === 'paused' ? (
             <button className="primary-button" onClick={resumeRecording} type="button">
@@ -900,6 +979,17 @@ function App() {
             도착!
           </button>
         </div>
+        <TimerDisplay
+          pausedDurationMs={livePausedDuration}
+          segmentDurationMs={liveSegmentDuration}
+          totalDurationMs={liveTotalDuration}
+        />
+        <div className="recording-metrics">
+          <Metric label="기록된 이동 시간" value={formatDuration(liveRecordedDuration)} />
+          <Metric label="체크포인트 수" value={`${currentTrip.checkpoints.length}개`} />
+          <Metric label="GPS 포인트" value={`${currentTrip.points.length}개`} />
+        </div>
+        {renderGpsStatus()}
       </section>
     );
   }
@@ -1386,6 +1476,12 @@ function App() {
           <div className="prompt-segment">
             <strong>{getSegmentLabel(segment, currentTrip.checkpoints)}</strong>
             <span>{formatDuration(segment.durationMs)}</span>
+            {checkpointPrompt.matchedPlaceId &&
+            checkpointPrompt.matchedPlaceDistanceMeters !== null ? (
+              <span className="history-match">
+                이력 불러옴 · 약 {Math.round(checkpointPrompt.matchedPlaceDistanceMeters)}m
+              </span>
+            ) : null}
           </div>
           <div className="prompt-form">
             <label>
@@ -1422,12 +1518,28 @@ function App() {
                 ))}
               </select>
             </label>
+            <label className="checkbox-row">
+              <input
+                checked={checkpointPrompt.savePlace}
+                onChange={(event) => updateCheckpointPrompt({ savePlace: event.target.checked })}
+                type="checkbox"
+              />
+              <span>
+                {checkpointPrompt.matchedPlaceId ? '장소 이력 갱신' : '장소 이력에 저장'}
+              </span>
+            </label>
           </div>
           <div className="dialog-actions">
             <button className="secondary-button" onClick={skipCheckpointPrompt} type="button">
               나중에!
             </button>
-            <button className="primary-button" onClick={saveCheckpointPrompt} type="button">
+            <button
+              className="primary-button"
+              onClick={() => {
+                void saveCheckpointPrompt();
+              }}
+              type="button"
+            >
               <Save aria-hidden="true" />
               입력 저장
             </button>

@@ -40,6 +40,19 @@ export interface Checkpoint {
   memo: string;
 }
 
+export interface SavedCheckpointPlace {
+  id: string;
+  name: string;
+  type: CheckpointType;
+  lat: number;
+  lng: number;
+  accuracy: number | null;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt: string;
+  usedCount: number;
+}
+
 export interface Segment {
   id: string;
   fromCheckpointId: string;

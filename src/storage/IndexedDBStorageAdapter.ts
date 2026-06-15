@@ -1,9 +1,10 @@
-import type { TripRecord } from '../types/trip';
+import type { SavedCheckpointPlace, TripRecord } from '../types/trip';
 import type { StorageAdapter } from './StorageAdapter';
 
 const DB_NAME = 'lets-go-commute';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const TRIP_STORE = 'tripRecords';
+const CHECKPOINT_PLACE_STORE = 'checkpointPlaces';
 const SETTINGS_STORE = 'settings';
 
 function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
@@ -35,6 +36,14 @@ export class IndexedDBStorageAdapter implements StorageAdapter {
         if (!db.objectStoreNames.contains(TRIP_STORE)) {
           const tripStore = db.createObjectStore(TRIP_STORE, { keyPath: 'id' });
           tripStore.createIndex('startedAt', 'startedAt');
+        }
+
+        if (!db.objectStoreNames.contains(CHECKPOINT_PLACE_STORE)) {
+          const checkpointPlaceStore = db.createObjectStore(CHECKPOINT_PLACE_STORE, {
+            keyPath: 'id',
+          });
+          checkpointPlaceStore.createIndex('updatedAt', 'updatedAt');
+          checkpointPlaceStore.createIndex('lastUsedAt', 'lastUsedAt');
         }
 
         if (!db.objectStoreNames.contains(SETTINGS_STORE)) {
@@ -88,6 +97,31 @@ export class IndexedDBStorageAdapter implements StorageAdapter {
     const db = await this.open();
     const transaction = db.transaction(TRIP_STORE, 'readwrite');
     const store = transaction.objectStore(TRIP_STORE);
+
+    await requestToPromise(store.clear());
+  }
+
+  async getAllCheckpointPlaces(): Promise<SavedCheckpointPlace[]> {
+    const db = await this.open();
+    const transaction = db.transaction(CHECKPOINT_PLACE_STORE, 'readonly');
+    const store = transaction.objectStore(CHECKPOINT_PLACE_STORE);
+    const places = await requestToPromise<SavedCheckpointPlace[]>(store.getAll());
+
+    return places.sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt));
+  }
+
+  async saveCheckpointPlace(place: SavedCheckpointPlace): Promise<void> {
+    const db = await this.open();
+    const transaction = db.transaction(CHECKPOINT_PLACE_STORE, 'readwrite');
+    const store = transaction.objectStore(CHECKPOINT_PLACE_STORE);
+
+    await requestToPromise(store.put(place));
+  }
+
+  async clearCheckpointPlaces(): Promise<void> {
+    const db = await this.open();
+    const transaction = db.transaction(CHECKPOINT_PLACE_STORE, 'readwrite');
+    const store = transaction.objectStore(CHECKPOINT_PLACE_STORE);
 
     await requestToPromise(store.clear());
   }

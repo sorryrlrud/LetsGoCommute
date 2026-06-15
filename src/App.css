@@ -782,6 +782,26 @@ textarea {
   font-size: 0.9rem;
 }
 
+.prompt-segment .history-match {
+  color: #15ad78;
+  font-weight: 900;
+}
+
+.checkbox-row {
+  align-items: center;
+  display: flex !important;
+  gap: 9px;
+}
+
+.checkbox-row input {
+  accent-color: #15ad78;
+  flex: 0 0 auto;
+  height: 18px;
+  min-height: 0;
+  padding: 0;
+  width: 18px;
+}
+
 .inline-error {
   background: #fff1f4;
   bottom: 8px;
