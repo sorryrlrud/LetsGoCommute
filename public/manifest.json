@@ -1,0 +1,17 @@
+{
+  "name": "출근드림팀",
+  "short_name": "출근드림팀",
+  "description": "GPS 기반 이동 기록 챌린지",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#f4f7f3",
+  "theme_color": "#ffdc2e",
+  "icons": [
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
