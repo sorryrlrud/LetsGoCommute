@@ -1,9 +1,18 @@
-const CACHE_NAME = 'lets-go-commute-v1';
+const CACHE_NAME = 'lets-go-commute-v2';
 const APP_SHELL = [
-  './',
   './manifest.json',
   './icons/icon.svg'
 ];
+
+function cacheResponse(request, response) {
+  if (!response || !response.ok) {
+    return response;
+  }
+
+  const copy = response.clone();
+  caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+  return response;
+}
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -26,19 +35,29 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) {
-        return cached;
-      }
+  const request = event.request;
+  const requestUrl = new URL(request.url);
+  const isNavigation = request.mode === 'navigate' || request.destination === 'document';
 
-      return fetch(event.request)
-        .then((response) => {
-          const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-          return response;
-        })
-        .catch(() => caches.match('./'));
-    })
+  if (isNavigation) {
+    event.respondWith(
+      fetch(request)
+        .then((response) => cacheResponse(request, response))
+        .catch(() => caches.match(request))
+    );
+    return;
+  }
+
+  if (requestUrl.origin !== self.location.origin) {
+    return;
+  }
+
+  event.respondWith(
+    caches.match(request).then((cached) =>
+      cached ||
+      fetch(request)
+        .then((response) => cacheResponse(request, response))
+        .catch(() => cached)
+    )
   );
 });
