@@ -2,7 +2,13 @@ import L, { type LatLngExpression } from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { LocateFixed } from 'lucide-react';
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
-import type { Checkpoint, GpsPoint, Segment, TransportMode } from '../types/trip';
+import type {
+  Checkpoint,
+  GpsPoint,
+  SavedCheckpointPlace,
+  Segment,
+  TransportMode,
+} from '../types/trip';
 import { checkpointTypeLabels, transportModeLabels } from '../types/trip';
 import { formatTime } from '../utils/date';
 import { calculateTotalDuration, formatDuration } from '../utils/duration';
@@ -13,13 +19,16 @@ interface MapViewProps {
   currentPosition?: GpsPoint | null;
   comparePoints?: GpsPoint[];
   segments?: Segment[];
+  savedPlaces?: SavedCheckpointPlace[];
   height?: string;
   viewKey?: string;
+  onCheckpointSelect?: (checkpointId: string) => void;
 }
 
 const fallbackCenter: LatLngExpression = [37.5665, 126.978];
 const emptyCheckpoints: Checkpoint[] = [];
 const emptyPoints: GpsPoint[] = [];
+const emptySavedPlaces: SavedCheckpointPlace[] = [];
 const emptySegments: Segment[] = [];
 
 interface SegmentDisplay {
@@ -132,6 +141,17 @@ function makeCurrentMarkerIcon() {
   });
 }
 
+function makeSavedPlaceIcon(place: SavedCheckpointPlace) {
+  return L.divIcon({
+    className: 'map-saved-place-marker',
+    html: `<span class="map-saved-place-pin">★</span><span class="map-saved-place-label">${escapeHtml(
+      place.name,
+    )}</span>`,
+    iconSize: [132, 34],
+    iconAnchor: [13, 17],
+  });
+}
+
 function buildCheckpointPopup(
   checkpoint: Checkpoint,
   index: number,
@@ -159,6 +179,17 @@ function buildCheckpointPopup(
   return `<div class="map-popup">${rows.join('')}</div>`;
 }
 
+function buildSavedPlacePopup(place: SavedCheckpointPlace) {
+  const rows = [
+    `<strong>${escapeHtml(place.name)}</strong>`,
+    `<span>저장한 체크포인트</span>`,
+    `<span>유형: ${escapeHtml(place.type ? checkpointTypeLabels[place.type] : '유형 없음')}</span>`,
+    `<span>사용 ${place.usedCount}회</span>`,
+  ];
+
+  return `<div class="map-popup">${rows.join('')}</div>`;
+}
+
 function pointKey(point: GpsPoint | undefined | null) {
   return point
     ? `${point.lat.toFixed(6)},${point.lng.toFixed(6)},${point.recordedAt}`
@@ -170,9 +201,12 @@ function getAutoFitKey(
   checkpoints: Checkpoint[],
   currentPosition: GpsPoint | null | undefined,
   comparePoints: GpsPoint[],
+  savedPlaces: SavedCheckpointPlace[],
 ) {
   const firstCheckpoint = checkpoints[0];
   const lastCheckpoint = checkpoints.at(-1);
+  const firstSavedPlace = savedPlaces[0];
+  const lastSavedPlace = savedPlaces.at(-1);
 
   return [
     points.length,
@@ -185,6 +219,9 @@ function getAutoFitKey(
     pointKey(comparePoints[0]),
     pointKey(comparePoints.at(-1)),
     pointKey(currentPosition),
+    savedPlaces.length,
+    firstSavedPlace?.id ?? 'none',
+    lastSavedPlace?.id ?? 'none',
   ].join('|');
 }
 
@@ -206,8 +243,10 @@ export function MapView({
   currentPosition,
   comparePoints = emptyPoints,
   segments = emptySegments,
+  savedPlaces = emptySavedPlaces,
   height = '360px',
   viewKey = 'default',
+  onCheckpointSelect,
 }: MapViewProps) {
   const mapElementRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -287,6 +326,7 @@ export function MapView({
 
     layers.clearLayers();
     const bounds: LatLngExpression[] = [];
+    const savedPlaceBounds: LatLngExpression[] = [];
 
     if (points.length > 0) {
       const latLngs = points.map(toLatLng);
@@ -309,6 +349,16 @@ export function MapView({
       bounds.push(...latLngs);
     }
 
+    savedPlaces.forEach((place) => {
+      const marker = L.marker([place.lat, place.lng], {
+        icon: makeSavedPlaceIcon(place),
+        opacity: 0.88,
+      }).bindPopup(buildSavedPlacePopup(place));
+
+      marker.addTo(layers);
+      savedPlaceBounds.push([place.lat, place.lng]);
+    });
+
     checkpoints.forEach((checkpoint, index) => {
       const isStart = index === 0;
       const isEnd = index === checkpoints.length - 1;
@@ -318,6 +368,10 @@ export function MapView({
       const marker = L.marker([checkpoint.lat, checkpoint.lng], {
         icon: makeCheckpointIcon(label, tone, checkpoint, segment),
       }).bindPopup(buildCheckpointPopup(checkpoint, index, segment));
+
+      if (onCheckpointSelect) {
+        marker.on('click', () => onCheckpointSelect(checkpoint.id));
+      }
 
       marker.addTo(layers);
       bounds.push([checkpoint.lat, checkpoint.lng]);
@@ -330,7 +384,17 @@ export function MapView({
       bounds.push(toLatLng(currentPosition));
     }
 
-    const autoFitKey = getAutoFitKey(points, checkpoints, currentPosition, comparePoints);
+    if (bounds.length === 0 && savedPlaceBounds.length > 0) {
+      bounds.push(...savedPlaceBounds);
+    }
+
+    const autoFitKey = getAutoFitKey(
+      points,
+      checkpoints,
+      currentPosition,
+      comparePoints,
+      savedPlaces,
+    );
     const shouldAutoFit =
       bounds.length > 0 &&
       !userAdjustedMapRef.current &&
@@ -350,7 +414,16 @@ export function MapView({
         }
       });
     }
-  }, [checkpoints, comparePoints, currentPosition, points, segments, viewKey]);
+  }, [
+    checkpoints,
+    comparePoints,
+    currentPosition,
+    onCheckpointSelect,
+    points,
+    savedPlaces,
+    segments,
+    viewKey,
+  ]);
 
   return (
     <div className="map-shell" style={{ minHeight: height }}>

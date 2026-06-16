@@ -234,11 +234,11 @@ button:disabled {
 
 .map-shell .leaflet-top,
 .map-shell .leaflet-bottom {
-  z-index: 90;
+  z-index: 500;
 }
 
 .map-shell .leaflet-control {
-  z-index: 90;
+  z-index: 500;
 }
 
 .map-locate-button {
@@ -256,7 +256,7 @@ button:disabled {
   right: 12px;
   top: 12px;
   width: 42px;
-  z-index: 120;
+  z-index: 550;
 }
 
 .map-locate-button svg {
@@ -361,6 +361,44 @@ button:disabled {
 .map-current-dot {
   background: #fb3b5f;
   color: #ffffff;
+}
+
+.map-saved-place-marker {
+  align-items: center;
+  display: inline-flex !important;
+  gap: 5px;
+  width: 132px !important;
+}
+
+.map-saved-place-pin {
+  align-items: center;
+  background: #ffffff;
+  border: 2px dashed #346df1;
+  border-radius: 999px;
+  box-shadow: 2px 2px 0 #17211f;
+  color: #346df1;
+  display: inline-flex;
+  font-size: 0.78rem;
+  font-weight: 950;
+  height: 26px;
+  justify-content: center;
+  width: 26px;
+}
+
+.map-saved-place-label {
+  background: #f4f8ff;
+  border: 2px solid #346df1;
+  border-radius: 8px;
+  box-shadow: 2px 2px 0 #17211f;
+  color: #17211f;
+  font-size: 0.68rem;
+  font-weight: 900;
+  line-height: 1.1;
+  max-width: 94px;
+  overflow: hidden;
+  padding: 4px 6px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-strip,

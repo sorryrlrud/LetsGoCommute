@@ -19,7 +19,7 @@ import {
   Trash2,
   Trophy,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { MapView } from './components/MapView';
 import { TimerDisplay } from './components/TimerDisplay';
@@ -37,6 +37,7 @@ import type {
   RecordingStatus,
   SavedCheckpointPlace,
   Segment,
+  TransportMode,
   TripRecord,
 } from './types/trip';
 import { checkpointTypeLabels, transportModeLabels } from './types/trip';
@@ -87,6 +88,18 @@ interface ConfirmState {
 }
 
 type CheckpointPromptState = DraftCheckpointPrompt;
+
+interface MapCheckpointEditorState {
+  source: 'current' | 'saved';
+  tripId: string;
+  checkpointId: string;
+  recordedAt: string;
+  segmentId: string | null;
+  name: string;
+  type: CheckpointType;
+  memo: string;
+  transportMode: TransportMode | null;
+}
 
 const checkpointTypeOptions = Object.keys(checkpointTypeLabels) as Exclude<
   CheckpointType,
@@ -331,6 +344,65 @@ function getLiveTotalDuration(trip: TripRecord | null, now: number) {
   return Math.max(0, endMs - new Date(trip.startedAt).getTime());
 }
 
+function createMapCheckpointEditorState(
+  source: MapCheckpointEditorState['source'],
+  trip: TripRecord,
+  checkpointId: string,
+): MapCheckpointEditorState | null {
+  const checkpoint = trip.checkpoints.find((item) => item.id === checkpointId);
+  if (!checkpoint) {
+    return null;
+  }
+
+  const segment = trip.segments.find((item) => item.toCheckpointId === checkpoint.id);
+
+  return {
+    source,
+    tripId: trip.id,
+    checkpointId: checkpoint.id,
+    recordedAt: checkpoint.recordedAt,
+    segmentId: segment?.id ?? null,
+    name: checkpoint.name,
+    type: checkpoint.type,
+    memo: checkpoint.memo,
+    transportMode: segment?.transportMode ?? null,
+  };
+}
+
+function applyMapCheckpointEditorToTrip(
+  trip: TripRecord,
+  editor: MapCheckpointEditorState,
+): TripRecord {
+  const checkpoints = trip.checkpoints.map((checkpoint) =>
+    checkpoint.id === editor.checkpointId
+      ? {
+          ...checkpoint,
+          memo: editor.memo,
+          name: editor.name,
+          type: editor.type,
+        }
+      : checkpoint,
+  );
+
+  const segments = editor.segmentId
+    ? trip.segments.map((segment) =>
+        segment.id === editor.segmentId
+          ? {
+              ...segment,
+              transportMode: editor.transportMode,
+            }
+          : segment,
+      )
+    : trip.segments;
+
+  return {
+    ...trip,
+    checkpoints,
+    segments,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 function App() {
   const [view, setView] = useState<AppView>('home');
   const [recordingStatus, setRecordingStatus] = useState<RecordingStatus>('idle');
@@ -345,6 +417,8 @@ function App() {
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [checkpointPrompt, setCheckpointPrompt] = useState<CheckpointPromptState | null>(null);
   const [showCheckpointEditor, setShowCheckpointEditor] = useState(false);
+  const [mapCheckpointEditor, setMapCheckpointEditor] =
+    useState<MapCheckpointEditorState | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [storageError, setStorageError] = useState<string | null>(null);
   const [draftHydrated, setDraftHydrated] = useState(false);
@@ -667,6 +741,7 @@ function App() {
       setActivePauseStartedAt(restoredActivePauseStartedAt);
       setCheckpointPrompt(draft.checkpointPrompt);
       setShowCheckpointEditor(draft.showCheckpointEditor);
+      setMapCheckpointEditor(null);
       setView(getDraftView(restoredStatus));
       lastSavedPointAtRef.current = getLastPointSavedAt(restoredTrip);
       showNotice(
@@ -684,6 +759,39 @@ function App() {
   function hasRecoverableTrip() {
     return Boolean(currentTrip && isDraftRecordingStatus(recordingStatus));
   }
+
+  const openCurrentMapCheckpointEditor = useCallback((checkpointId: string) => {
+    if (!currentTripRef.current) {
+      return;
+    }
+
+    const editor = createMapCheckpointEditorState(
+      'current',
+      currentTripRef.current,
+      checkpointId,
+    );
+
+    if (editor) {
+      setCheckpointPrompt(null);
+      setMapCheckpointEditor(editor);
+    }
+  }, []);
+
+  const openSelectedMapCheckpointEditor = useCallback(
+    (checkpointId: string) => {
+      if (!selectedTrip) {
+        return;
+      }
+
+      const editor = createMapCheckpointEditorState('saved', selectedTrip, checkpointId);
+
+      if (editor) {
+        setCheckpointPrompt(null);
+        setMapCheckpointEditor(editor);
+      }
+    },
+    [selectedTrip],
+  );
 
   function guardedSetView(nextView: AppView) {
     if (nextView === view) {
@@ -769,6 +877,7 @@ function App() {
       setActivePauseStartedAt(null);
       setCheckpointPrompt(null);
       setShowCheckpointEditor(false);
+      setMapCheckpointEditor(null);
       setRecordingStatus('recording');
       setView('recording');
       showNotice('출발! GPS 기록을 시작했습니다.');
@@ -1027,6 +1136,7 @@ function App() {
       setCurrentTrip(finishedTrip);
       setActivePauseStartedAt(null);
       setCheckpointPrompt(null);
+      setMapCheckpointEditor(null);
       setRecordingStatus('finished');
       setView('summary');
       showNotice('도착! 요약을 확인해주세요.');
@@ -1050,6 +1160,7 @@ function App() {
         setActivePauseStartedAt(null);
         setCheckpointPrompt(null);
         setShowCheckpointEditor(false);
+        setMapCheckpointEditor(null);
         setRecordingStatus('idle');
         setView('home');
         showNotice('임시 기록을 삭제했습니다.');
@@ -1091,6 +1202,46 @@ function App() {
     );
   }
 
+  function updateMapCheckpointEditorDraft(
+    patch: Partial<Pick<MapCheckpointEditorState, 'memo' | 'name' | 'transportMode' | 'type'>>,
+  ) {
+    setMapCheckpointEditor((editor) => (editor ? { ...editor, ...patch } : editor));
+  }
+
+  async function saveMapCheckpointEditor() {
+    if (!mapCheckpointEditor) {
+      return;
+    }
+
+    const editor = mapCheckpointEditor;
+
+    if (editor.source === 'current') {
+      setCurrentTrip((trip) => (trip ? applyMapCheckpointEditorToTrip(trip, editor) : trip));
+      setMapCheckpointEditor(null);
+      showNotice('체크포인트를 저장했습니다.');
+      return;
+    }
+
+    const tripToEdit = trips.find((trip) => trip.id === editor.tripId);
+    if (!tripToEdit) {
+      setMapCheckpointEditor(null);
+      return;
+    }
+
+    const updatedTrip = applyMapCheckpointEditorToTrip(tripToEdit, editor);
+
+    try {
+      await storageAdapter.saveTrip(updatedTrip);
+      setTrips((previous) =>
+        previous.map((trip) => (trip.id === updatedTrip.id ? updatedTrip : trip)),
+      );
+      setMapCheckpointEditor(null);
+      showNotice('체크포인트를 저장했습니다.');
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : '체크포인트 저장에 실패했습니다.');
+    }
+  }
+
   async function saveCurrentTrip() {
     if (!currentTrip) {
       return;
@@ -1115,6 +1266,7 @@ function App() {
       setSelectedTripId(tripToSave.id);
       setCheckpointPrompt(null);
       setShowCheckpointEditor(false);
+      setMapCheckpointEditor(null);
       setRecordingStatus('saved');
       setView('detail');
       showNotice('구간 기록 저장 완료!');
@@ -1126,6 +1278,7 @@ function App() {
   function openTripDetail(tripId: string) {
     setSelectedTripId(tripId);
     setComparisonTargetId(null);
+    setMapCheckpointEditor(null);
     setView('detail');
   }
 
@@ -1147,6 +1300,7 @@ function App() {
     try {
       await storageAdapter.deleteTrip(tripId);
       setTrips((previous) => previous.filter((trip) => trip.id !== tripId));
+      setMapCheckpointEditor(null);
       if (selectedTripId === tripId) {
         setSelectedTripId(null);
         setComparisonTargetId(null);
@@ -1181,6 +1335,7 @@ function App() {
       setCheckpointPlaces([]);
       setSelectedTripId(null);
       setComparisonTargetId(null);
+      setMapCheckpointEditor(null);
       showNotice('전체 데이터를 삭제했습니다.');
       setView('home');
     } catch (error) {
@@ -1259,7 +1414,13 @@ function App() {
         </div>
 
         <div className="map-stage">
-          <MapView currentPosition={currentPosition} height="420px" points={[]} viewKey="home" />
+          <MapView
+            currentPosition={currentPosition}
+            height="420px"
+            points={[]}
+            savedPlaces={checkpointPlaces}
+            viewKey="home"
+          />
         </div>
 
         <div className="status-strip">
@@ -1293,8 +1454,10 @@ function App() {
         <MapView
           checkpoints={currentTrip.checkpoints}
           currentPosition={currentPosition}
+          onCheckpointSelect={openCurrentMapCheckpointEditor}
           segments={currentTrip.segments}
           points={currentTrip.points}
+          savedPlaces={checkpointPlaces}
           height="430px"
           viewKey={`recording-${currentTrip.id}`}
         />
@@ -1349,7 +1512,9 @@ function App() {
         </div>
         <MapView
           checkpoints={currentTrip.checkpoints}
+          onCheckpointSelect={openCurrentMapCheckpointEditor}
           points={currentTrip.points}
+          savedPlaces={checkpointPlaces}
           segments={currentTrip.segments}
           viewKey={`summary-${currentTrip.id}`}
         />
@@ -1567,7 +1732,9 @@ function App() {
         </div>
         <MapView
           checkpoints={selectedTrip.checkpoints}
+          onCheckpointSelect={openSelectedMapCheckpointEditor}
           points={selectedTrip.points}
+          savedPlaces={checkpointPlaces}
           segments={selectedTrip.segments}
           viewKey={`detail-${selectedTrip.id}`}
         />
@@ -1672,7 +1839,9 @@ function App() {
                 <MapView
                   checkpoints={selectedTrip.checkpoints}
                   comparePoints={target.points}
+                  onCheckpointSelect={openSelectedMapCheckpointEditor}
                   points={selectedTrip.points}
+                  savedPlaces={checkpointPlaces}
                   segments={selectedTrip.segments}
                   viewKey={`compare-${selectedTrip.id}-${target.id}`}
                 />
@@ -1903,6 +2072,113 @@ function App() {
     );
   }
 
+  function renderMapCheckpointEditor() {
+    if (!mapCheckpointEditor) {
+      return null;
+    }
+
+    const editorTrip =
+      mapCheckpointEditor.source === 'current'
+        ? currentTrip
+        : trips.find((trip) => trip.id === mapCheckpointEditor.tripId) ?? null;
+    const checkpoint = editorTrip?.checkpoints.find(
+      (item) => item.id === mapCheckpointEditor.checkpointId,
+    );
+
+    if (!editorTrip || !checkpoint) {
+      return null;
+    }
+
+    const segment = mapCheckpointEditor.segmentId
+      ? editorTrip.segments.find((item) => item.id === mapCheckpointEditor.segmentId)
+      : null;
+
+    return (
+      <div className="dialog-backdrop">
+        <section
+          aria-labelledby="map-checkpoint-editor-title"
+          className="confirm-dialog checkpoint-dialog"
+          role="dialog"
+        >
+          <div className="dialog-symbol">
+            <MapPin aria-hidden="true" />
+          </div>
+          <div>
+            <h2 id="map-checkpoint-editor-title">체크포인트 편집</h2>
+            <p>{formatTime(mapCheckpointEditor.recordedAt)} 지점입니다.</p>
+          </div>
+          <div className="prompt-form">
+            <label>
+              이름
+              <input
+                onChange={(event) => updateMapCheckpointEditorDraft({ name: event.target.value })}
+                placeholder="체크포인트 이름"
+                value={mapCheckpointEditor.name}
+              />
+            </label>
+            <label>
+              유형
+              <select
+                onChange={(event) =>
+                  updateMapCheckpointEditorDraft({
+                    type: event.target.value ? (event.target.value as CheckpointType) : null,
+                  })
+                }
+                value={mapCheckpointEditor.type ?? ''}
+              >
+                <option value="">선택 안 함</option>
+                {checkpointTypeOptions.map((type) => (
+                  <option key={type} value={type}>
+                    {checkpointTypeLabels[type]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              메모
+              <input
+                onChange={(event) => updateMapCheckpointEditorDraft({ memo: event.target.value })}
+                placeholder="체크포인트 메모"
+                value={mapCheckpointEditor.memo}
+              />
+            </label>
+            {segment ? (
+              <label>
+                이전 구간 이동수단
+                <TransportModeSelect
+                  id={`map-checkpoint-segment-mode-${segment.id}`}
+                  onChange={(transportMode) =>
+                    updateMapCheckpointEditorDraft({ transportMode })
+                  }
+                  value={mapCheckpointEditor.transportMode}
+                />
+              </label>
+            ) : null}
+          </div>
+          <div className="dialog-actions">
+            <button
+              className="secondary-button"
+              onClick={() => setMapCheckpointEditor(null)}
+              type="button"
+            >
+              취소
+            </button>
+            <button
+              className="primary-button"
+              onClick={() => {
+                void saveMapCheckpointEditor();
+              }}
+              type="button"
+            >
+              <Save aria-hidden="true" />
+              완료
+            </button>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
   function renderActiveTripReturn() {
     if (!currentTrip || !isDraftRecordingStatus(recordingStatus)) {
       return null;
@@ -1997,6 +2273,7 @@ function App() {
       {notice ? <div className="toast">{notice}</div> : null}
       {renderActiveTripReturn()}
       {renderContent()}
+      {renderMapCheckpointEditor()}
       {renderCheckpointPrompt()}
       <ConfirmDialog
         description={confirmState?.description ?? ''}
