@@ -221,8 +221,10 @@ button:disabled {
   border: 2px solid #17211f;
   border-radius: 8px;
   box-shadow: 5px 5px 0 #17211f;
+  isolation: isolate;
   overflow: hidden;
   position: relative;
+  z-index: 0;
 }
 
 .leaflet-map {
@@ -230,41 +232,104 @@ button:disabled {
   width: 100%;
 }
 
-.map-marker {
+.map-shell .leaflet-top,
+.map-shell .leaflet-bottom {
+  z-index: 90;
+}
+
+.map-shell .leaflet-control {
+  z-index: 90;
+}
+
+.map-checkpoint-marker {
+  align-items: center;
+  display: inline-flex !important;
+  gap: 6px;
+  width: 176px !important;
+}
+
+.map-marker-pin,
+.map-current-dot {
   align-items: center;
   border: 2px solid #17211f;
   border-radius: 999px;
   box-shadow: 2px 2px 0 #17211f;
   display: flex !important;
   font-weight: 950;
+  height: 32px;
   justify-content: center;
+  width: 32px;
 }
 
-.map-marker span {
+.map-marker-meta {
+  background: #ffffff;
+  border: 2px solid #17211f;
+  border-radius: 8px;
+  box-shadow: 2px 2px 0 #17211f;
+  color: #17211f;
+  display: grid;
+  font-size: 0.68rem;
+  font-weight: 900;
+  gap: 1px;
+  line-height: 1.12;
+  max-width: 132px;
+  padding: 4px 7px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.map-marker-meta time {
+  font-size: 0.7rem;
+}
+
+.map-marker-segment {
   align-items: center;
-  border-radius: 999px;
-  display: flex;
-  height: 100%;
-  justify-content: center;
-  width: 100%;
+  color: #4c5a57;
+  display: inline-flex;
+  gap: 4px;
 }
 
-.map-marker.start span {
+.map-marker-segment.muted {
+  color: #7b8783;
+}
+
+.transport-icon {
+  font-size: 0.78rem;
+  line-height: 1;
+}
+
+.map-popup {
+  color: #17211f;
+  display: grid;
+  gap: 4px;
+  min-width: 170px;
+}
+
+.map-popup strong {
+  font-size: 0.95rem;
+}
+
+.map-popup span {
+  color: #4c5a57;
+  font-size: 0.82rem;
+}
+
+.map-checkpoint-marker.start .map-marker-pin {
   background: #15ad78;
   color: #ffffff;
 }
 
-.map-marker.end span {
+.map-checkpoint-marker.end .map-marker-pin {
   background: #346df1;
   color: #ffffff;
 }
 
-.map-marker.check span {
+.map-checkpoint-marker.check .map-marker-pin {
   background: #ffdc2e;
   color: #17211f;
 }
 
-.map-marker.current span {
+.map-current-dot {
   background: #fb3b5f;
   color: #ffffff;
 }

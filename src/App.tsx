@@ -919,7 +919,7 @@ function App() {
         </div>
 
         <div className="map-stage">
-          <MapView currentPosition={currentPosition} points={[]} height="420px" />
+          <MapView currentPosition={currentPosition} height="420px" points={[]} viewKey="home" />
         </div>
 
         <div className="status-strip">
@@ -953,8 +953,10 @@ function App() {
         <MapView
           checkpoints={currentTrip.checkpoints}
           currentPosition={currentPosition}
+          segments={currentTrip.segments}
           points={currentTrip.points}
           height="430px"
+          viewKey={`recording-${currentTrip.id}`}
         />
         <div className={`bottom-controls ${recordingStatus === 'paused' ? 'paused' : ''}`}>
           {recordingStatus === 'paused' ? (
@@ -1005,7 +1007,12 @@ function App() {
           <span className="pill loud">도착!</span>
           <h1>오늘의 기록 요약</h1>
         </div>
-        <MapView checkpoints={currentTrip.checkpoints} points={currentTrip.points} />
+        <MapView
+          checkpoints={currentTrip.checkpoints}
+          points={currentTrip.points}
+          segments={currentTrip.segments}
+          viewKey={`summary-${currentTrip.id}`}
+        />
         <StatsGrid trip={currentTrip} />
         <section className="panel">
           <h2>구간별 소요 시간</h2>
@@ -1218,7 +1225,12 @@ function App() {
           <h1>{selectedTrip.name}</h1>
           <p>{formatDate(selectedTrip.startedAt)}</p>
         </div>
-        <MapView checkpoints={selectedTrip.checkpoints} points={selectedTrip.points} />
+        <MapView
+          checkpoints={selectedTrip.checkpoints}
+          points={selectedTrip.points}
+          segments={selectedTrip.segments}
+          viewKey={`detail-${selectedTrip.id}`}
+        />
         <StatsGrid trip={selectedTrip} />
         <section className="panel">
           <h2>체크포인트 목록</h2>
@@ -1321,6 +1333,8 @@ function App() {
                   checkpoints={selectedTrip.checkpoints}
                   comparePoints={target.points}
                   points={selectedTrip.points}
+                  segments={selectedTrip.segments}
+                  viewKey={`compare-${selectedTrip.id}-${target.id}`}
                 />
                 {segmentCountDifferent ? (
                   <section className="warning-box">
