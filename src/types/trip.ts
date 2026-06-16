@@ -99,6 +99,34 @@ export type RecordingStatus =
   | 'editing'
   | 'saved';
 
+export type DraftRecordingStatus = Extract<
+  RecordingStatus,
+  'recording' | 'paused' | 'finished' | 'editing'
+>;
+
+export interface DraftCheckpointPrompt {
+  checkpointId: string;
+  segmentId: string;
+  name: string;
+  type: CheckpointType;
+  transportMode: TransportMode | null;
+  savePlace: boolean;
+  matchedPlaceId: string | null;
+  matchedPlaceDistanceMeters: number | null;
+}
+
+export interface ActiveTripDraft {
+  key: 'activeTripDraft';
+  trip: TripRecord;
+  recordingStatus: DraftRecordingStatus;
+  activePauseStartedAt: string | null;
+  checkpointPrompt: DraftCheckpointPrompt | null;
+  showCheckpointEditor: boolean;
+  view: 'recording' | 'summary' | 'edit';
+  savedAt: string;
+  appVersion: string;
+}
+
 export interface ValidationResult {
   valid: boolean;
   errors: string[];

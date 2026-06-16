@@ -1,4 +1,4 @@
-import type { SavedCheckpointPlace, TripRecord } from '../types/trip';
+import type { ActiveTripDraft, SavedCheckpointPlace, TripRecord } from '../types/trip';
 
 export interface StorageAdapter {
   getAllTrips(): Promise<TripRecord[]>;
@@ -9,4 +9,7 @@ export interface StorageAdapter {
   getAllCheckpointPlaces(): Promise<SavedCheckpointPlace[]>;
   saveCheckpointPlace(place: SavedCheckpointPlace): Promise<void>;
   clearCheckpointPlaces(): Promise<void>;
+  getActiveTripDraft(): Promise<ActiveTripDraft | null>;
+  saveActiveTripDraft(draft: ActiveTripDraft): Promise<void>;
+  clearActiveTripDraft(): Promise<void>;
 }

@@ -1,5 +1,6 @@
 import L, { type LatLngExpression } from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import { LocateFixed } from 'lucide-react';
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import type { Checkpoint, GpsPoint, Segment, TransportMode } from '../types/trip';
 import { checkpointTypeLabels, transportModeLabels } from '../types/trip';
@@ -216,6 +217,21 @@ export function MapView({
   const lastAutoFitKeyRef = useRef<string | null>(null);
   const [mapError, setMapError] = useState<string | null>(null);
 
+  function recenterToCurrentPosition() {
+    const map = mapRef.current;
+
+    if (!map || !currentPosition) {
+      return;
+    }
+
+    userAdjustedMapRef.current = true;
+    applyMapViewChange(map, applyingViewChangeRef, () => {
+      map.setView(toLatLng(currentPosition), Math.max(map.getZoom(), 16), {
+        animate: true,
+      });
+    });
+  }
+
   useEffect(() => {
     if (!mapElementRef.current || mapRef.current) {
       return;
@@ -339,6 +355,16 @@ export function MapView({
   return (
     <div className="map-shell" style={{ minHeight: height }}>
       <div ref={mapElementRef} className="leaflet-map" style={{ height }} />
+      <button
+        aria-label="현위치로 복귀"
+        className="map-locate-button"
+        disabled={!currentPosition}
+        onClick={recenterToCurrentPosition}
+        title="현위치로 복귀"
+        type="button"
+      >
+        <LocateFixed aria-hidden="true" />
+      </button>
       {mapError ? <p className="inline-error">{mapError}</p> : null}
     </div>
   );

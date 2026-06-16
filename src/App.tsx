@@ -27,15 +27,17 @@ import { TransportModeSelect } from './components/TransportModeSelect';
 import { TripCard } from './components/TripCard';
 import { storageAdapter } from './storage/IndexedDBStorageAdapter';
 import type {
+  ActiveTripDraft,
   Checkpoint,
   CheckpointType,
+  DraftCheckpointPrompt,
+  DraftRecordingStatus,
   GpsPoint,
   PauseRange,
   RecordingStatus,
   SavedCheckpointPlace,
   Segment,
   TripRecord,
-  TransportMode,
 } from './types/trip';
 import { checkpointTypeLabels, transportModeLabels } from './types/trip';
 import { formatDate, formatDateTime, formatTime, generateDefaultTripName } from './utils/date';
@@ -52,8 +54,13 @@ import {
 import './App.css';
 
 const APP_VERSION = '0.1.0';
-const GPS_SAVE_INTERVAL_MS = 10_000;
+const GPS_MAX_SAVE_INTERVAL_MS = 5_000;
+const GPS_MIN_SAVE_INTERVAL_MS = 1_000;
+const GPS_DISTANCE_SAVE_METERS = 8;
+const GPS_TURN_SAVE_DEGREES = 35;
+const GPS_TURN_MIN_LEG_METERS = 5;
 const CHECKPOINT_PLACE_MATCH_RADIUS_METERS = 100;
+const DRAFT_STALE_PAUSE_MS = 90_000;
 
 type AppView =
   | 'home'
@@ -79,21 +86,99 @@ interface ConfirmState {
   onConfirm: () => void;
 }
 
-interface CheckpointPromptState {
-  checkpointId: string;
-  segmentId: string;
-  name: string;
-  type: CheckpointType;
-  transportMode: TransportMode | null;
-  savePlace: boolean;
-  matchedPlaceId: string | null;
-  matchedPlaceDistanceMeters: number | null;
-}
+type CheckpointPromptState = DraftCheckpointPrompt;
 
 const checkpointTypeOptions = Object.keys(checkpointTypeLabels) as Exclude<
   CheckpointType,
   null
 >[];
+
+function isDraftRecordingStatus(status: RecordingStatus): status is DraftRecordingStatus {
+  return (
+    status === 'recording' ||
+    status === 'paused' ||
+    status === 'finished' ||
+    status === 'editing'
+  );
+}
+
+function getDraftView(status: DraftRecordingStatus): ActiveTripDraft['view'] {
+  if (status === 'finished') {
+    return 'summary';
+  }
+
+  if (status === 'editing') {
+    return 'edit';
+  }
+
+  return 'recording';
+}
+
+function getLastPointSavedAt(trip: TripRecord) {
+  return new Date(trip.points.at(-1)?.recordedAt ?? trip.updatedAt).getTime();
+}
+
+function toRadians(degrees: number) {
+  return (degrees * Math.PI) / 180;
+}
+
+function calculateBearingDegrees(from: GpsPoint, to: GpsPoint) {
+  const fromLat = toRadians(from.lat);
+  const toLat = toRadians(to.lat);
+  const lngDelta = toRadians(to.lng - from.lng);
+  const y = Math.sin(lngDelta) * Math.cos(toLat);
+  const x =
+    Math.cos(fromLat) * Math.sin(toLat) -
+    Math.sin(fromLat) * Math.cos(toLat) * Math.cos(lngDelta);
+
+  return (Math.atan2(y, x) * 180) / Math.PI;
+}
+
+function calculateBearingDeltaDegrees(first: number, second: number) {
+  const delta = Math.abs(first - second) % 360;
+  return delta > 180 ? 360 - delta : delta;
+}
+
+function shouldSaveRoutePoint(trip: TripRecord, point: GpsPoint) {
+  const lastPoint = trip.points.at(-1);
+  if (!lastPoint) {
+    return true;
+  }
+
+  const pointTime = new Date(point.recordedAt).getTime();
+  const lastPointTime = new Date(lastPoint.recordedAt).getTime();
+  const elapsedMs = pointTime - lastPointTime;
+
+  if (elapsedMs < GPS_MIN_SAVE_INTERVAL_MS) {
+    return false;
+  }
+
+  const distanceMeters = calculateDistanceMeters(lastPoint, point);
+  if (distanceMeters >= GPS_DISTANCE_SAVE_METERS) {
+    return true;
+  }
+
+  if (elapsedMs >= GPS_MAX_SAVE_INTERVAL_MS && distanceMeters >= 2) {
+    return true;
+  }
+
+  const previousPoint = trip.points.at(-2);
+  if (!previousPoint || distanceMeters < GPS_TURN_MIN_LEG_METERS) {
+    return false;
+  }
+
+  const previousLegMeters = calculateDistanceMeters(previousPoint, lastPoint);
+  if (previousLegMeters < GPS_TURN_MIN_LEG_METERS) {
+    return false;
+  }
+
+  const turnDegrees = calculateBearingDeltaDegrees(
+    calculateBearingDegrees(previousPoint, lastPoint),
+    calculateBearingDegrees(lastPoint, point),
+  );
+
+  return turnDegrees >= GPS_TURN_SAVE_DEGREES;
+}
 
 function positionToPoint(position: GeolocationPosition, recordedAt = new Date().toISOString()) {
   return {
@@ -262,13 +347,18 @@ function App() {
   const [showCheckpointEditor, setShowCheckpointEditor] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [storageError, setStorageError] = useState<string | null>(null);
+  const [draftHydrated, setDraftHydrated] = useState(false);
   const [now, setNow] = useState(Date.now());
 
   const currentTripRef = useRef<TripRecord | null>(currentTrip);
   const checkpointPlacesRef = useRef<SavedCheckpointPlace[]>(checkpointPlaces);
+  const checkpointPromptRef = useRef<CheckpointPromptState | null>(checkpointPrompt);
   const recordingStatusRef = useRef<RecordingStatus>(recordingStatus);
   const activePauseStartedAtRef = useRef<string | null>(activePauseStartedAt);
+  const showCheckpointEditorRef = useRef(showCheckpointEditor);
   const lastSavedPointAtRef = useRef<number>(0);
+  const draftPersistTimerRef = useRef<number | null>(null);
+  const wakeLockRef = useRef<WakeLockSentinel | null>(null);
 
   const selectedTrip = useMemo(
     () => trips.find((trip) => trip.id === selectedTripId) ?? null,
@@ -289,12 +379,20 @@ function App() {
   }, [checkpointPlaces]);
 
   useEffect(() => {
+    checkpointPromptRef.current = checkpointPrompt;
+  }, [checkpointPrompt]);
+
+  useEffect(() => {
     recordingStatusRef.current = recordingStatus;
   }, [recordingStatus]);
 
   useEffect(() => {
     activePauseStartedAtRef.current = activePauseStartedAt;
   }, [activePauseStartedAt]);
+
+  useEffect(() => {
+    showCheckpointEditorRef.current = showCheckpointEditor;
+  }, [showCheckpointEditor]);
 
   useEffect(() => {
     const interval = window.setInterval(() => setNow(Date.now()), 1000);
@@ -304,6 +402,117 @@ function App() {
   useEffect(() => {
     void loadTrips();
     void loadCheckpointPlaces();
+    void restoreActiveTripDraft();
+    // Restore runs once before draft autosave is enabled.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!draftHydrated) {
+      return;
+    }
+
+    if (draftPersistTimerRef.current !== null) {
+      window.clearTimeout(draftPersistTimerRef.current);
+    }
+
+    if (!currentTrip || !isDraftRecordingStatus(recordingStatus)) {
+      draftPersistTimerRef.current = null;
+      void storageAdapter.clearActiveTripDraft().catch((error) => {
+        setStorageError(error instanceof Error ? error.message : '임시 기록 삭제에 실패했습니다.');
+      });
+      return;
+    }
+
+    const draft = createActiveTripDraft(
+      currentTrip,
+      recordingStatus,
+      activePauseStartedAt,
+      checkpointPrompt,
+      showCheckpointEditor,
+    );
+
+    draftPersistTimerRef.current = window.setTimeout(() => {
+      void storageAdapter.saveActiveTripDraft(draft).catch((error) => {
+        setStorageError(error instanceof Error ? error.message : '임시 기록 저장에 실패했습니다.');
+      });
+      draftPersistTimerRef.current = null;
+    }, 250);
+
+    return () => {
+      if (draftPersistTimerRef.current !== null) {
+        window.clearTimeout(draftPersistTimerRef.current);
+        draftPersistTimerRef.current = null;
+      }
+    };
+  }, [
+    activePauseStartedAt,
+    checkpointPrompt,
+    currentTrip,
+    draftHydrated,
+    recordingStatus,
+    showCheckpointEditor,
+  ]);
+
+  useEffect(() => {
+    if (!currentTrip || !isDraftRecordingStatus(recordingStatus)) {
+      return;
+    }
+
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [currentTrip, recordingStatus]);
+
+  useEffect(() => {
+    const handlePageHide = () => {
+      const trip = currentTripRef.current;
+      const status = recordingStatusRef.current;
+
+      if (!trip || !isDraftRecordingStatus(status)) {
+        return;
+      }
+
+      void storageAdapter.saveActiveTripDraft(
+        createActiveTripDraft(
+          trip,
+          status,
+          activePauseStartedAtRef.current,
+          checkpointPromptRef.current,
+          showCheckpointEditorRef.current,
+        ),
+      );
+    };
+
+    window.addEventListener('pagehide', handlePageHide);
+    return () => window.removeEventListener('pagehide', handlePageHide);
+  }, []);
+
+  useEffect(() => {
+    if (recordingStatus === 'recording') {
+      void requestScreenWakeLock();
+      return;
+    }
+
+    void releaseScreenWakeLock();
+  }, [recordingStatus]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && recordingStatusRef.current === 'recording') {
+        void requestScreenWakeLock();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      void releaseScreenWakeLock();
+    };
   }, []);
 
   useEffect(() => {
@@ -322,12 +531,11 @@ function App() {
           return;
         }
 
-        const pointTime = new Date(point.recordedAt).getTime();
-        if (pointTime - lastSavedPointAtRef.current < GPS_SAVE_INTERVAL_MS) {
+        if (!shouldSaveRoutePoint(activeTrip, point)) {
           return;
         }
 
-        lastSavedPointAtRef.current = pointTime;
+        lastSavedPointAtRef.current = new Date(point.recordedAt).getTime();
         setCurrentTrip((trip) =>
           trip
             ? {
@@ -378,6 +586,127 @@ function App() {
     setConfirmState(state);
   }
 
+  async function requestScreenWakeLock() {
+    if (wakeLockRef.current && !wakeLockRef.current.released) {
+      return;
+    }
+
+    const wakeLock = navigator.wakeLock;
+    if (!wakeLock) {
+      return;
+    }
+
+    try {
+      const sentinel = await wakeLock.request('screen');
+      wakeLockRef.current = sentinel;
+      sentinel.addEventListener('release', () => {
+        if (wakeLockRef.current === sentinel) {
+          wakeLockRef.current = null;
+        }
+      });
+    } catch {
+      wakeLockRef.current = null;
+    }
+  }
+
+  async function releaseScreenWakeLock() {
+    const wakeLock = wakeLockRef.current;
+    wakeLockRef.current = null;
+
+    if (wakeLock && !wakeLock.released) {
+      await wakeLock.release().catch(() => undefined);
+    }
+  }
+
+  function createActiveTripDraft(
+    trip: TripRecord,
+    status: DraftRecordingStatus,
+    activePause: string | null,
+    prompt: CheckpointPromptState | null,
+    checkpointEditorVisible: boolean,
+  ): ActiveTripDraft {
+    return {
+      key: 'activeTripDraft',
+      trip,
+      recordingStatus: status,
+      activePauseStartedAt: activePause,
+      checkpointPrompt: prompt,
+      showCheckpointEditor: checkpointEditorVisible,
+      view: getDraftView(status),
+      savedAt: new Date().toISOString(),
+      appVersion: APP_VERSION,
+    };
+  }
+
+  async function restoreActiveTripDraft() {
+    try {
+      const draft = await storageAdapter.getActiveTripDraft();
+
+      if (!draft) {
+        return;
+      }
+
+      const savedAtMs = new Date(draft.savedAt).getTime();
+      const isStaleRecording =
+        draft.recordingStatus === 'recording' &&
+        Number.isFinite(savedAtMs) &&
+        Date.now() - savedAtMs > DRAFT_STALE_PAUSE_MS;
+      const restoredStatus: DraftRecordingStatus = isStaleRecording
+        ? 'paused'
+        : draft.recordingStatus;
+      const restoredActivePauseStartedAt = isStaleRecording
+        ? draft.savedAt
+        : draft.activePauseStartedAt;
+      const restoredTrip = {
+        ...draft.trip,
+        updatedAt: isStaleRecording ? new Date().toISOString() : draft.trip.updatedAt,
+      };
+
+      setCurrentTrip(restoredTrip);
+      setRecordingStatus(restoredStatus);
+      setActivePauseStartedAt(restoredActivePauseStartedAt);
+      setCheckpointPrompt(draft.checkpointPrompt);
+      setShowCheckpointEditor(draft.showCheckpointEditor);
+      setView(getDraftView(restoredStatus));
+      lastSavedPointAtRef.current = getLastPointSavedAt(restoredTrip);
+      showNotice(
+        isStaleRecording
+          ? '중단된 기록을 복구하고 일시정지로 전환했습니다.'
+          : '진행 중이던 기록을 복구했습니다.',
+      );
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : '임시 기록 복구에 실패했습니다.');
+    } finally {
+      setDraftHydrated(true);
+    }
+  }
+
+  function hasRecoverableTrip() {
+    return Boolean(currentTrip && isDraftRecordingStatus(recordingStatus));
+  }
+
+  function guardedSetView(nextView: AppView) {
+    if (nextView === view) {
+      return;
+    }
+
+    if (!hasRecoverableTrip()) {
+      setView(nextView);
+      return;
+    }
+
+    requestConfirmation({
+      title: '진행 중인 기록이 있습니다',
+      description:
+        '기록은 자동 보존되지만, 화면을 이동하면 기록 조작 버튼이 숨겨질 수 있습니다.',
+      confirmLabel: '이동',
+      onConfirm: () => {
+        setConfirmState(null);
+        setView(nextView);
+      },
+    });
+  }
+
   function requestFreshPosition(): Promise<GpsPoint> {
     return new Promise((resolve, reject) => {
       if (!('geolocation' in navigator)) {
@@ -413,6 +742,12 @@ function App() {
   }
 
   function confirmStart() {
+    if (currentTrip && isDraftRecordingStatus(recordingStatus)) {
+      setView(getDraftView(recordingStatus));
+      showNotice('진행 중인 기록으로 돌아왔습니다.');
+      return;
+    }
+
     requestConfirmation({
       title: '출발할까요?',
       description: '지금 위치에서 기록을 시작합니다.',
@@ -707,6 +1042,9 @@ function App() {
       confirmLabel: '삭제',
       tone: 'danger',
       onConfirm: () => {
+        void storageAdapter.clearActiveTripDraft().catch((error) => {
+          setStorageError(error instanceof Error ? error.message : '임시 기록 삭제에 실패했습니다.');
+        });
         setConfirmState(null);
         setCurrentTrip(null);
         setActivePauseStartedAt(null);
@@ -771,6 +1109,7 @@ function App() {
 
     try {
       await storageAdapter.saveTrip(tripToSave);
+      await storageAdapter.clearActiveTripDraft();
       await loadTrips();
       setCurrentTrip(tripToSave);
       setSelectedTripId(tripToSave.id);
@@ -837,6 +1176,7 @@ function App() {
     try {
       await storageAdapter.clearAllTrips();
       await storageAdapter.clearCheckpointPlaces();
+      await storageAdapter.clearActiveTripDraft();
       setTrips([]);
       setCheckpointPlaces([]);
       setSelectedTripId(null);
@@ -1563,6 +1903,30 @@ function App() {
     );
   }
 
+  function renderActiveTripReturn() {
+    if (!currentTrip || !isDraftRecordingStatus(recordingStatus)) {
+      return null;
+    }
+
+    const targetView = getDraftView(recordingStatus);
+    if (view === targetView) {
+      return null;
+    }
+
+    return (
+      <section className="warning-box active-trip-banner">
+        <AlertCircle aria-hidden="true" />
+        <div>
+          <strong>진행 중인 기록이 있습니다</strong>
+          <span>새로고침해도 복구되지만, 기록 조작은 기록 화면에서 진행해주세요.</span>
+        </div>
+        <button className="secondary-button" onClick={() => setView(targetView)} type="button">
+          기록 화면
+        </button>
+      </section>
+    );
+  }
+
   function renderGpsStatus() {
     return (
       <div className={`gps-status ${gpsStatus.tone}`}>
@@ -1587,7 +1951,7 @@ function App() {
   return (
     <main className="app-shell">
       <header className="app-header">
-        <button className="brand-button" onClick={() => setView('home')} type="button">
+        <button className="brand-button" onClick={() => guardedSetView('home')} type="button">
           <Navigation aria-hidden="true" />
           <span>출근드림팀</span>
         </button>
@@ -1595,7 +1959,7 @@ function App() {
           <button
             aria-current={view === 'home' ? 'page' : undefined}
             className="icon-button"
-            onClick={() => setView('home')}
+            onClick={() => guardedSetView('home')}
             title="홈"
             type="button"
           >
@@ -1604,7 +1968,7 @@ function App() {
           <button
             aria-current={view === 'records' ? 'page' : undefined}
             className="icon-button"
-            onClick={() => setView('records')}
+            onClick={() => guardedSetView('records')}
             title="내 기록"
             type="button"
           >
@@ -1613,7 +1977,7 @@ function App() {
           <button
             aria-current={view === 'settings' ? 'page' : undefined}
             className="icon-button"
-            onClick={() => setView('settings')}
+            onClick={() => guardedSetView('settings')}
             title="설정"
             type="button"
           >
@@ -1631,6 +1995,7 @@ function App() {
       ) : null}
 
       {notice ? <div className="toast">{notice}</div> : null}
+      {renderActiveTripReturn()}
       {renderContent()}
       {renderCheckpointPrompt()}
       <ConfirmDialog
