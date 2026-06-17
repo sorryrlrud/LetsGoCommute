@@ -792,6 +792,51 @@ textarea {
   margin: 2px 0 0;
 }
 
+.checkpoint-manager {
+  gap: 16px;
+}
+
+.checkpoint-edit-list {
+  display: grid;
+  gap: 12px;
+  list-style: none;
+  padding-left: 0;
+}
+
+.checkpoint-edit-row {
+  border-bottom: 1px solid #dce4e1;
+  padding-bottom: 12px;
+}
+
+.checkpoint-edit-row:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.checkpoint-edit-body {
+  display: grid;
+  gap: 10px;
+}
+
+.checkpoint-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.compact-button {
+  box-shadow: 2px 2px 0 #17211f;
+  font-size: 0.84rem;
+  min-height: 36px;
+  padding: 0 10px;
+  width: auto;
+}
+
+.dialog-structure-actions {
+  border-top: 1px solid #dce4e1;
+  padding-top: 12px;
+}
+
 .compare-metric {
   display: grid;
   gap: 4px;
@@ -819,6 +864,48 @@ textarea {
 
 .info-panel h2 {
   margin: 0 0 4px;
+}
+
+.settings-panel {
+  gap: 12px;
+}
+
+.setting-toggle {
+  align-items: center;
+  color: #17211f;
+  display: flex;
+  font-weight: 900;
+  gap: 12px;
+}
+
+.setting-toggle input {
+  accent-color: #15ad78;
+  flex: 0 0 auto;
+  height: 22px;
+  min-height: 0;
+  padding: 0;
+  width: 22px;
+}
+
+.setting-toggle span {
+  align-items: center;
+  display: grid;
+  gap: 2px 8px;
+  grid-template-columns: auto 1fr;
+}
+
+.setting-toggle svg {
+  color: #346df1;
+  grid-row: 1 / span 2;
+  height: 22px;
+  width: 22px;
+}
+
+.setting-toggle small {
+  color: #5d6864;
+  font-size: 0.86rem;
+  font-weight: 800;
+  grid-column: 2;
 }
 
 .empty-state {
@@ -1009,6 +1096,10 @@ textarea {
   .finish-button,
   .start-button {
     width: 100%;
+  }
+
+  .checkpoint-actions .compact-button {
+    width: auto;
   }
 
   .bottom-controls {

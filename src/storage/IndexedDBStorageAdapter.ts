@@ -1,4 +1,9 @@
-import type { ActiveTripDraft, SavedCheckpointPlace, TripRecord } from '../types/trip';
+import type {
+  ActiveTripDraft,
+  AppSettings,
+  SavedCheckpointPlace,
+  TripRecord,
+} from '../types/trip';
 import type { StorageAdapter } from './StorageAdapter';
 
 const DB_NAME = 'lets-go-commute';
@@ -7,6 +12,7 @@ const TRIP_STORE = 'tripRecords';
 const CHECKPOINT_PLACE_STORE = 'checkpointPlaces';
 const SETTINGS_STORE = 'settings';
 const ACTIVE_TRIP_DRAFT_KEY = 'activeTripDraft';
+const APP_SETTINGS_KEY = 'appSettings';
 
 function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -152,6 +158,25 @@ export class IndexedDBStorageAdapter implements StorageAdapter {
     const store = transaction.objectStore(SETTINGS_STORE);
 
     await requestToPromise(store.delete(ACTIVE_TRIP_DRAFT_KEY));
+  }
+
+  async getAppSettings(): Promise<AppSettings | null> {
+    const db = await this.open();
+    const transaction = db.transaction(SETTINGS_STORE, 'readonly');
+    const store = transaction.objectStore(SETTINGS_STORE);
+    const settings = await requestToPromise<AppSettings | undefined>(
+      store.get(APP_SETTINGS_KEY),
+    );
+
+    return settings ?? null;
+  }
+
+  async saveAppSettings(settings: AppSettings): Promise<void> {
+    const db = await this.open();
+    const transaction = db.transaction(SETTINGS_STORE, 'readwrite');
+    const store = transaction.objectStore(SETTINGS_STORE);
+
+    await requestToPromise(store.put(settings));
   }
 }
 

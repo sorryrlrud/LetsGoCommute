@@ -11,6 +11,8 @@ export type TransportMode =
 export type CheckpointType =
   | 'start'
   | 'end'
+  | 'home'
+  | 'work'
   | 'bus_stop'
   | 'subway_station'
   | 'train_station'
@@ -127,6 +129,12 @@ export interface ActiveTripDraft {
   appVersion: string;
 }
 
+export interface AppSettings {
+  key: 'appSettings';
+  pushNotificationsEnabled: boolean;
+  updatedAt: string;
+}
+
 export interface ValidationResult {
   valid: boolean;
   errors: string[];
@@ -147,6 +155,8 @@ export const checkpointTypeLabels: Record<Exclude<CheckpointType, null>, string>
   {
     start: '출발지',
     end: '도착지',
+    home: '집',
+    work: '회사',
     bus_stop: '버스정류장',
     subway_station: '지하철역',
     train_station: '기차역',

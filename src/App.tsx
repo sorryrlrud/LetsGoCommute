@@ -1,6 +1,9 @@
 import {
   AlertCircle,
+  Bell,
+  BellOff,
   Check,
+  GitMerge,
   GitCompareArrows,
   Home,
   Info,
@@ -28,6 +31,7 @@ import { TripCard } from './components/TripCard';
 import { storageAdapter } from './storage/IndexedDBStorageAdapter';
 import type {
   ActiveTripDraft,
+  AppSettings,
   Checkpoint,
   CheckpointType,
   DraftCheckpointPrompt,
@@ -105,6 +109,123 @@ const checkpointTypeOptions = Object.keys(checkpointTypeLabels) as Exclude<
   CheckpointType,
   null
 >[];
+
+type NotificationPermissionState = NotificationPermission | 'unsupported';
+
+function createDefaultAppSettings(): AppSettings {
+  return {
+    key: 'appSettings',
+    pushNotificationsEnabled: false,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function getInitialNotificationPermission(): NotificationPermissionState {
+  if (!('Notification' in window)) {
+    return 'unsupported';
+  }
+
+  return Notification.permission;
+}
+
+function getNotificationPermissionLabel(permission: NotificationPermissionState) {
+  if (permission === 'granted') {
+    return '허용됨';
+  }
+
+  if (permission === 'denied') {
+    return '차단됨';
+  }
+
+  if (permission === 'default') {
+    return '미결정';
+  }
+
+  return '지원 안 함';
+}
+
+function reindexCheckpoints(checkpoints: Checkpoint[]) {
+  return checkpoints.map((checkpoint, order) => ({ ...checkpoint, order }));
+}
+
+function isFixedEndpointCheckpoint(trip: TripRecord, index: number) {
+  const lastIndex = trip.checkpoints.length - 1;
+  return index === 0 || (trip.endedAt !== null && index === lastIndex);
+}
+
+function canRemoveCheckpoint(trip: TripRecord, checkpointId: string) {
+  const index = trip.checkpoints.findIndex((checkpoint) => checkpoint.id === checkpointId);
+  return index >= 0 && !isFixedEndpointCheckpoint(trip, index);
+}
+
+function mergeCheckpointMemo(target: Checkpoint, source: Checkpoint) {
+  const sourceMemo = source.memo.trim();
+
+  if (sourceMemo.length === 0) {
+    return target;
+  }
+
+  const targetMemo = target.memo.trim();
+
+  return {
+    ...target,
+    memo: targetMemo.length > 0 ? `${targetMemo}\n병합: ${sourceMemo}` : sourceMemo,
+  };
+}
+
+function rebuildTripWithCheckpoints(trip: TripRecord, checkpoints: Checkpoint[]) {
+  const orderedCheckpoints = reindexCheckpoints(checkpoints);
+
+  return {
+    ...trip,
+    checkpoints: orderedCheckpoints,
+    segments: buildSegmentsFromCheckpoints(orderedCheckpoints, trip.segments),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function removeCheckpointFromTrip(
+  trip: TripRecord,
+  checkpointId: string,
+  mode: 'delete' | 'merge-previous' | 'merge-next',
+) {
+  const checkpointIndex = trip.checkpoints.findIndex(
+    (checkpoint) => checkpoint.id === checkpointId,
+  );
+
+  if (checkpointIndex < 0 || isFixedEndpointCheckpoint(trip, checkpointIndex)) {
+    return null;
+  }
+
+  if (mode === 'merge-previous' && checkpointIndex <= 0) {
+    return null;
+  }
+
+  if (mode === 'merge-next' && checkpointIndex >= trip.checkpoints.length - 1) {
+    return null;
+  }
+
+  const checkpoints = [...trip.checkpoints];
+  const source = checkpoints[checkpointIndex];
+
+  if (mode === 'merge-previous') {
+    checkpoints[checkpointIndex - 1] = mergeCheckpointMemo(
+      checkpoints[checkpointIndex - 1],
+      source,
+    );
+  }
+
+  if (mode === 'merge-next') {
+    checkpoints[checkpointIndex + 1] = mergeCheckpointMemo(
+      checkpoints[checkpointIndex + 1],
+      source,
+    );
+  }
+
+  checkpoints.splice(checkpointIndex, 1);
+
+  return rebuildTripWithCheckpoints(trip, checkpoints);
+}
 
 function isDraftRecordingStatus(status: RecordingStatus): status is DraftRecordingStatus {
   return (
@@ -409,6 +530,9 @@ function App() {
   const [currentTrip, setCurrentTrip] = useState<TripRecord | null>(null);
   const [trips, setTrips] = useState<TripRecord[]>([]);
   const [checkpointPlaces, setCheckpointPlaces] = useState<SavedCheckpointPlace[]>([]);
+  const [appSettings, setAppSettings] = useState<AppSettings>(() => createDefaultAppSettings());
+  const [notificationPermission, setNotificationPermission] =
+    useState<NotificationPermissionState>(() => getInitialNotificationPermission());
   const [currentPosition, setCurrentPosition] = useState<GpsPoint | null>(null);
   const [gpsStatus, setGpsStatus] = useState<GpsStatus>(() => getInitialGpsStatus());
   const [activePauseStartedAt, setActivePauseStartedAt] = useState<string | null>(null);
@@ -426,6 +550,7 @@ function App() {
 
   const currentTripRef = useRef<TripRecord | null>(currentTrip);
   const checkpointPlacesRef = useRef<SavedCheckpointPlace[]>(checkpointPlaces);
+  const appSettingsRef = useRef<AppSettings>(appSettings);
   const checkpointPromptRef = useRef<CheckpointPromptState | null>(checkpointPrompt);
   const recordingStatusRef = useRef<RecordingStatus>(recordingStatus);
   const activePauseStartedAtRef = useRef<string | null>(activePauseStartedAt);
@@ -453,6 +578,10 @@ function App() {
   }, [checkpointPlaces]);
 
   useEffect(() => {
+    appSettingsRef.current = appSettings;
+  }, [appSettings]);
+
+  useEffect(() => {
     checkpointPromptRef.current = checkpointPrompt;
   }, [checkpointPrompt]);
 
@@ -476,6 +605,7 @@ function App() {
   useEffect(() => {
     void loadTrips();
     void loadCheckpointPlaces();
+    void loadAppSettings();
     void restoreActiveTripDraft();
     // Restore runs once before draft autosave is enabled.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -651,6 +781,28 @@ function App() {
     }
   }
 
+  async function loadAppSettings() {
+    try {
+      setStorageError(null);
+      const storedSettings = await storageAdapter.getAppSettings();
+      const permission = getInitialNotificationPermission();
+      const nextSettings = storedSettings ?? createDefaultAppSettings();
+      const effectiveSettings =
+        nextSettings.pushNotificationsEnabled && permission !== 'granted'
+          ? {
+              ...nextSettings,
+              pushNotificationsEnabled: false,
+              updatedAt: new Date().toISOString(),
+            }
+          : nextSettings;
+      setAppSettings(effectiveSettings);
+      appSettingsRef.current = effectiveSettings;
+      setNotificationPermission(permission);
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : '앱 설정을 열지 못했습니다.');
+    }
+  }
+
   function showNotice(message: string) {
     setNotice(message);
     window.setTimeout(() => setNotice(null), 3600);
@@ -692,6 +844,93 @@ function App() {
     }
   }
 
+  async function saveAppSettings(nextSettings: AppSettings) {
+    await storageAdapter.saveAppSettings(nextSettings);
+    setAppSettings(nextSettings);
+    appSettingsRef.current = nextSettings;
+  }
+
+  async function setPushNotificationsEnabled(enabled: boolean) {
+    const nextSettings: AppSettings = {
+      ...appSettingsRef.current,
+      pushNotificationsEnabled: false,
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (!enabled) {
+      try {
+        await saveAppSettings(nextSettings);
+        showNotice('푸시 알림을 껐습니다.');
+      } catch (error) {
+        showNotice(error instanceof Error ? error.message : '알림 설정 저장에 실패했습니다.');
+      }
+      return;
+    }
+
+    if (!('Notification' in window)) {
+      setNotificationPermission('unsupported');
+      showNotice('이 브라우저는 알림을 지원하지 않습니다.');
+      return;
+    }
+
+    const permission =
+      Notification.permission === 'default'
+        ? await Notification.requestPermission()
+        : Notification.permission;
+    setNotificationPermission(permission);
+
+    if (permission !== 'granted') {
+      try {
+        await saveAppSettings(nextSettings);
+      } catch {
+        // Permission feedback is more actionable than a settings write failure here.
+      }
+      showNotice('브라우저 알림 권한이 허용되지 않았습니다.');
+      return;
+    }
+
+    try {
+      await saveAppSettings({
+        ...nextSettings,
+        pushNotificationsEnabled: true,
+        updatedAt: new Date().toISOString(),
+      });
+      showNotice('체크포인트 푸시 알림을 켰습니다.');
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : '알림 설정 저장에 실패했습니다.');
+    }
+  }
+
+  async function showCheckpointNotification(checkpoint: Checkpoint) {
+    if (!appSettingsRef.current.pushNotificationsEnabled) {
+      return;
+    }
+
+    if (!('Notification' in window) || Notification.permission !== 'granted') {
+      return;
+    }
+
+    const title = '체크포인트 저장 완료';
+    const body = `${checkpoint.name || '체크포인트'} · ${formatTime(checkpoint.recordedAt)}`;
+    const icon = `${import.meta.env.BASE_URL}icons/icon.svg`;
+    const options: NotificationOptions = {
+      body,
+      icon,
+      badge: icon,
+      tag: `lets-go-commute-checkpoint-${checkpoint.id}`,
+    };
+
+    if ('serviceWorker' in navigator) {
+      const registration = await navigator.serviceWorker.ready.catch(() => null);
+      if (registration) {
+        await registration.showNotification(title, options).catch(() => undefined);
+        return;
+      }
+    }
+
+    new Notification(title, options);
+  }
+
   function createActiveTripDraft(
     trip: TripRecord,
     status: DraftRecordingStatus,
@@ -710,6 +949,27 @@ function App() {
       savedAt: new Date().toISOString(),
       appVersion: APP_VERSION,
     };
+  }
+
+  async function saveActiveTripDraftImmediately(
+    trip: TripRecord,
+    prompt: CheckpointPromptState | null,
+  ) {
+    const status = recordingStatusRef.current;
+
+    if (!isDraftRecordingStatus(status)) {
+      return;
+    }
+
+    await storageAdapter.saveActiveTripDraft(
+      createActiveTripDraft(
+        trip,
+        status,
+        activePauseStartedAtRef.current,
+        prompt,
+        showCheckpointEditorRef.current,
+      ),
+    );
   }
 
   async function restoreActiveTripDraft() {
@@ -919,21 +1179,7 @@ function App() {
         matchedPlace?.place.name ?? `체크포인트 ${activeTrip.checkpoints.length + 1}`,
       );
       const segment = createSegmentFromCheckpoints(previousCheckpoint, checkpoint);
-
-      setCurrentTrip((trip) => {
-        if (!trip || trip.id !== activeTrip.id) {
-          return trip;
-        }
-
-        return {
-          ...trip,
-          points: [...trip.points, point],
-          checkpoints: [...trip.checkpoints, checkpoint],
-          segments: [...trip.segments, segment],
-          updatedAt: point.recordedAt,
-        };
-      });
-      setCheckpointPrompt({
+      const prompt: CheckpointPromptState = {
         checkpointId: checkpoint.id,
         segmentId: segment.id,
         name: checkpoint.name,
@@ -942,9 +1188,36 @@ function App() {
         savePlace: true,
         matchedPlaceId: matchedPlace?.place.id ?? null,
         matchedPlaceDistanceMeters: matchedPlace?.distanceMeters ?? null,
+      };
+      const updatedTrip: TripRecord = {
+        ...activeTrip,
+        points: [...activeTrip.points, point],
+        checkpoints: [...activeTrip.checkpoints, checkpoint],
+        segments: [...activeTrip.segments, segment],
+        updatedAt: point.recordedAt,
+      };
+
+      setCurrentTrip((trip) => {
+        if (!trip || trip.id !== activeTrip.id) {
+          return trip;
+        }
+
+        return updatedTrip;
       });
+      currentTripRef.current = updatedTrip;
+      setCheckpointPrompt(prompt);
       lastSavedPointAtRef.current = new Date(point.recordedAt).getTime();
-      showNotice('체크포인트 통과! 방금 구간을 바로 정리할 수 있습니다.');
+      try {
+        await saveActiveTripDraftImmediately(updatedTrip, prompt);
+        showNotice('체크포인트 자동 저장 완료! 방금 구간을 바로 정리할 수 있습니다.');
+      } catch (error) {
+        showNotice(
+          error instanceof Error
+            ? `체크포인트 기록됨, 임시 저장 실패: ${error.message}`
+            : '체크포인트 기록됨, 임시 저장에 실패했습니다.',
+        );
+      }
+      void showCheckpointNotification(checkpoint);
     } catch (error) {
       showNotice(error instanceof Error ? error.message : '체크포인트 위치를 확인하지 못했습니다.');
     }
@@ -1242,6 +1515,125 @@ function App() {
     }
   }
 
+  function getCheckpointStructureActionLabel(
+    mode: 'delete' | 'merge-previous' | 'merge-next',
+  ) {
+    if (mode === 'merge-previous') {
+      return '이전 체크포인트와 병합';
+    }
+
+    if (mode === 'merge-next') {
+      return '다음 체크포인트와 병합';
+    }
+
+    return '체크포인트 삭제';
+  }
+
+  function confirmCheckpointStructureEdit(
+    source: MapCheckpointEditorState['source'],
+    tripId: string,
+    checkpointId: string,
+    mode: 'delete' | 'merge-previous' | 'merge-next',
+  ) {
+    const trip =
+      source === 'current'
+        ? currentTripRef.current
+        : trips.find((item) => item.id === tripId) ?? null;
+    const checkpoint = trip?.checkpoints.find((item) => item.id === checkpointId);
+
+    if (!trip || !checkpoint) {
+      return;
+    }
+
+    if (!canRemoveCheckpoint(trip, checkpointId)) {
+      showNotice('출발지와 도착지는 삭제하거나 병합할 수 없습니다.');
+      return;
+    }
+
+    requestConfirmation({
+      title: getCheckpointStructureActionLabel(mode),
+      description:
+        mode === 'delete'
+          ? `${checkpoint.name || '이 체크포인트'}를 삭제하고 구간을 다시 계산합니다.`
+          : `${checkpoint.name || '이 체크포인트'}를 합치고 구간을 다시 계산합니다.`,
+      confirmLabel: mode === 'delete' ? '삭제' : '병합',
+      tone: mode === 'delete' ? 'danger' : 'primary',
+      onConfirm: () => {
+        void applyCheckpointStructureEdit(source, tripId, checkpointId, mode);
+      },
+    });
+  }
+
+  async function applyCheckpointStructureEdit(
+    source: MapCheckpointEditorState['source'],
+    tripId: string,
+    checkpointId: string,
+    mode: 'delete' | 'merge-previous' | 'merge-next',
+  ) {
+    setConfirmState(null);
+
+    const trip =
+      source === 'current'
+        ? currentTripRef.current
+        : trips.find((item) => item.id === tripId) ?? null;
+    const checkpoint = trip?.checkpoints.find((item) => item.id === checkpointId);
+
+    if (!trip || !checkpoint) {
+      return;
+    }
+
+    const updatedTrip = removeCheckpointFromTrip(trip, checkpointId, mode);
+
+    if (!updatedTrip) {
+      showNotice('이 체크포인트는 삭제하거나 병합할 수 없습니다.');
+      return;
+    }
+
+    if (source === 'current') {
+      const nextPrompt =
+        checkpointPromptRef.current?.checkpointId === checkpointId
+          ? null
+          : checkpointPromptRef.current;
+
+      setCurrentTrip(updatedTrip);
+      currentTripRef.current = updatedTrip;
+      setCheckpointPrompt(nextPrompt);
+      setMapCheckpointEditor((editor) =>
+        editor?.checkpointId === checkpointId ? null : editor,
+      );
+
+      try {
+        await saveActiveTripDraftImmediately(updatedTrip, nextPrompt);
+      } catch (error) {
+        setStorageError(error instanceof Error ? error.message : '임시 기록 저장에 실패했습니다.');
+      }
+
+      showNotice(
+        mode === 'delete'
+          ? '체크포인트를 삭제했습니다.'
+          : '체크포인트를 병합했습니다.',
+      );
+      return;
+    }
+
+    try {
+      await storageAdapter.saveTrip(updatedTrip);
+      setTrips((previous) =>
+        previous.map((item) => (item.id === updatedTrip.id ? updatedTrip : item)),
+      );
+      setMapCheckpointEditor((editor) =>
+        editor?.checkpointId === checkpointId ? null : editor,
+      );
+      showNotice(
+        mode === 'delete'
+          ? '체크포인트를 삭제했습니다.'
+          : '체크포인트를 병합했습니다.',
+      );
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : '체크포인트 변경 저장에 실패했습니다.');
+    }
+  }
+
   async function saveCurrentTrip() {
     if (!currentTrip) {
       return;
@@ -1398,18 +1790,6 @@ function App() {
               <Play aria-hidden="true" />
               출발!
             </button>
-            <button
-              className="secondary-button"
-              onClick={() => {
-                void requestFreshPosition().catch((error) =>
-                  showNotice(error instanceof Error ? error.message : '위치 확인 실패'),
-                );
-              }}
-              type="button"
-            >
-              <LocateFixed aria-hidden="true" />
-              현재 위치 확인
-            </button>
           </div>
         </div>
 
@@ -1494,6 +1874,7 @@ function App() {
           <Metric label="체크포인트 수" value={`${currentTrip.checkpoints.length}개`} />
           <Metric label="GPS 포인트" value={`${currentTrip.points.length}개`} />
         </div>
+        {renderCheckpointManager(currentTrip, 'current', '이동 중 체크포인트')}
         {renderGpsStatus()}
       </section>
     );
@@ -1523,6 +1904,7 @@ function App() {
           <h2>구간별 소요 시간</h2>
           <SegmentSummary checkpoints={currentTrip.checkpoints} segments={currentTrip.segments} />
         </section>
+        {renderCheckpointManager(currentTrip, 'current', '체크포인트 관리')}
         <div className="button-row">
           <button
             className="primary-button"
@@ -1592,59 +1974,7 @@ function App() {
         </div>
 
         {showCheckpointEditor ? (
-          <section className="panel form-panel">
-            <h2>체크포인트 편집</h2>
-            <div className="editor-list">
-              {currentTrip.checkpoints.map((checkpoint) => (
-                <article className="editor-item" key={checkpoint.id}>
-                  <div className="editor-heading">
-                    <span className="number-badge">{checkpoint.order + 1}</span>
-                    <strong>{formatTime(checkpoint.recordedAt)}</strong>
-                  </div>
-                  <label>
-                    이름
-                    <input
-                      onChange={(event) =>
-                        updateCheckpoint(checkpoint.id, { name: event.target.value })
-                      }
-                      placeholder="체크포인트 이름"
-                      value={checkpoint.name}
-                    />
-                  </label>
-                  <label>
-                    유형
-                    <select
-                      onChange={(event) =>
-                        updateCheckpoint(checkpoint.id, {
-                          type: event.target.value
-                            ? (event.target.value as CheckpointType)
-                            : null,
-                        })
-                      }
-                      value={checkpoint.type ?? ''}
-                    >
-                      <option value="">선택 안 함</option>
-                      {checkpointTypeOptions.map((type) => (
-                        <option key={type} value={type}>
-                          {checkpointTypeLabels[type]}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    메모
-                    <input
-                      onChange={(event) =>
-                        updateCheckpoint(checkpoint.id, { memo: event.target.value })
-                      }
-                      placeholder="체크포인트 메모"
-                      value={checkpoint.memo}
-                    />
-                  </label>
-                </article>
-              ))}
-            </div>
-          </section>
+          renderCheckpointManager(currentTrip, 'current', '체크포인트 편집')
         ) : null}
 
         {!validation.valid ? (
@@ -1677,6 +2007,107 @@ function App() {
             요약으로
           </button>
         </div>
+      </section>
+    );
+  }
+
+  function renderCheckpointManager(
+    trip: TripRecord,
+    source: MapCheckpointEditorState['source'],
+    title: string,
+  ) {
+    return (
+      <section className="panel checkpoint-manager">
+        <h2>{title}</h2>
+        <ol className="checkpoint-list checkpoint-edit-list">
+          {trip.checkpoints.map((checkpoint, index) => {
+            const isFixedEndpoint = isFixedEndpointCheckpoint(trip, index);
+            const canMergePrevious = canRemoveCheckpoint(trip, checkpoint.id) && index > 0;
+            const canMergeNext =
+              canRemoveCheckpoint(trip, checkpoint.id) && index < trip.checkpoints.length - 1;
+
+            return (
+              <li className="checkpoint-edit-row" key={checkpoint.id}>
+                <span className="number-badge">{checkpoint.order + 1}</span>
+                <div className="checkpoint-edit-body">
+                  <div>
+                    <strong>{checkpoint.name || `체크포인트 ${index + 1}`}</strong>
+                    <span>
+                      {checkpoint.type ? checkpointTypeLabels[checkpoint.type] : '유형 없음'} ·{' '}
+                      {formatTime(checkpoint.recordedAt)}
+                    </span>
+                    {checkpoint.memo ? <p>{checkpoint.memo}</p> : null}
+                  </div>
+                  <div className="checkpoint-actions">
+                    <button
+                      className="secondary-button compact-button"
+                      onClick={() =>
+                        source === 'current'
+                          ? openCurrentMapCheckpointEditor(checkpoint.id)
+                          : openSelectedMapCheckpointEditor(checkpoint.id)
+                      }
+                      type="button"
+                    >
+                      <Pencil aria-hidden="true" />
+                      편집
+                    </button>
+                    {!isFixedEndpoint ? (
+                      <button
+                        className="danger-button subtle compact-button"
+                        onClick={() =>
+                          confirmCheckpointStructureEdit(
+                            source,
+                            trip.id,
+                            checkpoint.id,
+                            'delete',
+                          )
+                        }
+                        type="button"
+                      >
+                        <Trash2 aria-hidden="true" />
+                        삭제
+                      </button>
+                    ) : null}
+                    {canMergePrevious ? (
+                      <button
+                        className="secondary-button compact-button"
+                        onClick={() =>
+                          confirmCheckpointStructureEdit(
+                            source,
+                            trip.id,
+                            checkpoint.id,
+                            'merge-previous',
+                          )
+                        }
+                        type="button"
+                      >
+                        <GitMerge aria-hidden="true" />
+                        이전과 병합
+                      </button>
+                    ) : null}
+                    {canMergeNext ? (
+                      <button
+                        className="secondary-button compact-button"
+                        onClick={() =>
+                          confirmCheckpointStructureEdit(
+                            source,
+                            trip.id,
+                            checkpoint.id,
+                            'merge-next',
+                          )
+                        }
+                        type="button"
+                      >
+                        <GitMerge aria-hidden="true" />
+                        다음과 병합
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              </li>
+            );
+          })}
+        </ol>
       </section>
     );
   }
@@ -1739,24 +2170,7 @@ function App() {
           viewKey={`detail-${selectedTrip.id}`}
         />
         <StatsGrid trip={selectedTrip} />
-        <section className="panel">
-          <h2>체크포인트 목록</h2>
-          <ol className="checkpoint-list">
-            {selectedTrip.checkpoints.map((checkpoint) => (
-              <li key={checkpoint.id}>
-                <span className="number-badge">{checkpoint.order + 1}</span>
-                <div>
-                  <strong>{checkpoint.name}</strong>
-                  <span>
-                    {checkpoint.type ? checkpointTypeLabels[checkpoint.type] : '유형 없음'} ·{' '}
-                    {formatTime(checkpoint.recordedAt)}
-                  </span>
-                  {checkpoint.memo ? <p>{checkpoint.memo}</p> : null}
-                </div>
-              </li>
-            ))}
-          </ol>
-        </section>
+        {renderCheckpointManager(selectedTrip, 'saved', '체크포인트 목록')}
         <section className="panel">
           <h2>구간 기록</h2>
           <SegmentSummary checkpoints={selectedTrip.checkpoints} segments={selectedTrip.segments} />
@@ -1939,7 +2353,33 @@ function App() {
         <section className="settings-grid">
           <Metric label="저장된 기록 수" value={`${trips.length}개`} />
           <Metric label="저장 방식" value="IndexedDB 로컬 저장" />
-          <Metric label="PWA" value="설치 가능 정적 웹앱" />
+          <Metric label="알림 권한" value={getNotificationPermissionLabel(notificationPermission)} />
+        </section>
+        <section className="panel settings-panel">
+          <h2>푸시 알림</h2>
+          <label className="setting-toggle">
+            <input
+              checked={appSettings.pushNotificationsEnabled}
+              disabled={notificationPermission === 'unsupported'}
+              onChange={(event) => {
+                void setPushNotificationsEnabled(event.target.checked);
+              }}
+              type="checkbox"
+            />
+            <span>
+              {appSettings.pushNotificationsEnabled ? (
+                <Bell aria-hidden="true" />
+              ) : (
+                <BellOff aria-hidden="true" />
+              )}
+              <strong>체크포인트 알림</strong>
+              <small>
+                {appSettings.pushNotificationsEnabled
+                  ? '체크포인트 저장 시 알림을 보냅니다.'
+                  : '체크포인트 알림이 꺼져 있습니다.'}
+              </small>
+            </span>
+          </label>
         </section>
         <section className="panel">
           <h2>위치 권한 안내</h2>
@@ -2092,6 +2532,10 @@ function App() {
     const segment = mapCheckpointEditor.segmentId
       ? editorTrip.segments.find((item) => item.id === mapCheckpointEditor.segmentId)
       : null;
+    const checkpointIndex = editorTrip.checkpoints.findIndex(
+      (item) => item.id === mapCheckpointEditor.checkpointId,
+    );
+    const canEditStructure = canRemoveCheckpoint(editorTrip, mapCheckpointEditor.checkpointId);
 
     return (
       <div className="dialog-backdrop">
@@ -2155,6 +2599,59 @@ function App() {
               </label>
             ) : null}
           </div>
+          {canEditStructure ? (
+            <div className="checkpoint-actions dialog-structure-actions">
+              <button
+                className="danger-button subtle compact-button"
+                onClick={() =>
+                  confirmCheckpointStructureEdit(
+                    mapCheckpointEditor.source,
+                    editorTrip.id,
+                    mapCheckpointEditor.checkpointId,
+                    'delete',
+                  )
+                }
+                type="button"
+              >
+                <Trash2 aria-hidden="true" />
+                삭제
+              </button>
+              {checkpointIndex > 0 ? (
+                <button
+                  className="secondary-button compact-button"
+                  onClick={() =>
+                    confirmCheckpointStructureEdit(
+                      mapCheckpointEditor.source,
+                      editorTrip.id,
+                      mapCheckpointEditor.checkpointId,
+                      'merge-previous',
+                    )
+                  }
+                  type="button"
+                >
+                  <GitMerge aria-hidden="true" />
+                  이전과 병합
+                </button>
+              ) : null}
+              {checkpointIndex < editorTrip.checkpoints.length - 1 ? (
+                <button
+                  className="secondary-button compact-button"
+                  onClick={() =>
+                    confirmCheckpointStructureEdit(
+                      mapCheckpointEditor.source,
+                      editorTrip.id,
+                      mapCheckpointEditor.checkpointId,
+                      'merge-next',
+                    )
+                  }
+                  type="button"
+                >
+                  <GitMerge aria-hidden="true" />
+                  다음과 병합
+                </button>
+              ) : null}
+            </div>
+          ) : null}
           <div className="dialog-actions">
             <button
               className="secondary-button"

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lets-go-commute-v2';
+const CACHE_NAME = 'lets-go-commute-v3';
 const APP_SHELL = [
   './manifest.json',
   './icons/icon.svg'
@@ -59,5 +59,26 @@ self.addEventListener('fetch', (event) => {
         .then((response) => cacheResponse(request, response))
         .catch(() => cached)
     )
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients
+      .matchAll({ type: 'window', includeUncontrolled: true })
+      .then((clientList) => {
+        const client = clientList.find((item) => 'focus' in item);
+
+        if (client) {
+          return client.focus();
+        }
+
+        if (self.clients.openWindow) {
+          return self.clients.openWindow('./');
+        }
+
+        return undefined;
+      })
   );
 });
