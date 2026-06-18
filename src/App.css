@@ -900,6 +900,74 @@ textarea {
   gap: 12px;
 }
 
+.panel-title-row {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.dev-tools-panel {
+  gap: 16px;
+}
+
+.dev-mode-badge {
+  background: #f9fbf7;
+  border: 2px solid #17211f;
+  border-radius: 999px;
+  color: #4c5a57;
+  flex: 0 0 auto;
+  font-size: 0.78rem;
+  font-weight: 950;
+  padding: 5px 10px;
+}
+
+.dev-mode-badge.on {
+  background: #fff5cf;
+  color: #17211f;
+}
+
+.dev-preset-grid,
+.dev-form-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.dev-preset-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.dev-form-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dev-form-grid label,
+.dev-dummy-tools label {
+  color: #17211f;
+  display: grid;
+  font-weight: 900;
+  gap: 8px;
+}
+
+.compact-button {
+  font-size: 0.88rem;
+  min-height: 40px;
+  padding: 0 12px;
+}
+
+.dev-tool-actions {
+  align-items: stretch;
+}
+
+.dev-dummy-tools {
+  align-items: end;
+  border-top: 1px solid #dce4e1;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(150px, 220px) auto;
+  padding-top: 14px;
+}
+
 .setting-toggle {
   align-items: center;
   color: #17211f;
@@ -1092,6 +1160,15 @@ textarea {
 
   .hero-copy {
     min-height: auto;
+  }
+
+  .dev-preset-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dev-form-grid,
+  .dev-dummy-tools {
+    grid-template-columns: 1fr;
   }
 }
 

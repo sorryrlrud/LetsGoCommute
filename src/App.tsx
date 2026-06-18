@@ -105,12 +105,106 @@ interface MapCheckpointEditorState {
   transportMode: TransportMode | null;
 }
 
+interface DevSimulationState {
+  enabled: boolean;
+  lat: string;
+  lng: string;
+  accuracy: string;
+  recordedAt: string;
+  dummyCount: number;
+}
+
+interface DevRoutePoint {
+  key: string;
+  label: string;
+  name: string;
+  type: Exclude<CheckpointType, null>;
+  lat: number;
+  lng: number;
+  offsetMinutes: number;
+  transportModeFromPrevious: TransportMode | null;
+}
+
 const checkpointTypeOptions = Object.keys(checkpointTypeLabels) as Exclude<
   CheckpointType,
   null
 >[];
 
+const DEV_DUMMY_MAX_COUNT = 8;
+
+const DEV_ROUTE_POINTS: DevRoutePoint[] = [
+  {
+    key: 'home',
+    label: '집',
+    name: '개발 집',
+    type: 'home',
+    lat: 37.56632,
+    lng: 126.97818,
+    offsetMinutes: 0,
+    transportModeFromPrevious: null,
+  },
+  {
+    key: 'bus-stop',
+    label: '버스정류장',
+    name: '개발 버스정류장',
+    type: 'bus_stop',
+    lat: 37.56462,
+    lng: 126.98258,
+    offsetMinutes: 7,
+    transportModeFromPrevious: 'walk',
+  },
+  {
+    key: 'subway',
+    label: '지하철역',
+    name: '개발 지하철역',
+    type: 'subway_station',
+    lat: 37.57009,
+    lng: 126.98331,
+    offsetMinutes: 22,
+    transportModeFromPrevious: 'bus',
+  },
+  {
+    key: 'work',
+    label: '회사',
+    name: '개발 회사',
+    type: 'work',
+    lat: 37.50131,
+    lng: 127.03962,
+    offsetMinutes: 49,
+    transportModeFromPrevious: 'subway',
+  },
+];
+
 type NotificationPermissionState = NotificationPermission | 'unsupported';
+
+function formatDateTimeLocalInput(date: Date) {
+  const offsetMs = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+}
+
+function parseDateTimeLocalInput(value: string) {
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function createDefaultDevSimulationState(): DevSimulationState {
+  const now = new Date();
+  now.setSeconds(0, 0);
+  const firstPoint = DEV_ROUTE_POINTS[0];
+
+  return {
+    enabled: false,
+    lat: firstPoint.lat.toFixed(6),
+    lng: firstPoint.lng.toFixed(6),
+    accuracy: '8',
+    recordedAt: formatDateTimeLocalInput(now),
+    dummyCount: 3,
+  };
+}
 
 function createDefaultAppSettings(): AppSettings {
   return {
@@ -424,6 +518,133 @@ function createTripFromStart(point: GpsPoint): TripRecord {
   };
 }
 
+function createDevSimulationPoint(state: DevSimulationState): GpsPoint {
+  const lat = Number(state.lat);
+  const lng = Number(state.lng);
+  const accuracy = state.accuracy.trim().length > 0 ? Number(state.accuracy) : 8;
+  const recordedAtMs = parseDateTimeLocalInput(state.recordedAt);
+
+  if (
+    !Number.isFinite(lat) ||
+    lat < -90 ||
+    lat > 90 ||
+    !Number.isFinite(lng) ||
+    lng < -180 ||
+    lng > 180 ||
+    !Number.isFinite(accuracy) ||
+    accuracy < 0 ||
+    recordedAtMs === null
+  ) {
+    throw new Error('개발 테스트 좌표와 시간을 확인해주세요.');
+  }
+
+  return {
+    lat,
+    lng,
+    accuracy,
+    recordedAt: new Date(recordedAtMs).toISOString(),
+  };
+}
+
+function createGpsPointFromValues(
+  lat: number,
+  lng: number,
+  recordedAt: string,
+  accuracy: number,
+): GpsPoint {
+  return {
+    lat,
+    lng,
+    accuracy,
+    recordedAt,
+  };
+}
+
+function interpolateDevRoutePoints(points: GpsPoint[]) {
+  const routePoints: GpsPoint[] = points[0] ? [points[0]] : [];
+
+  for (let index = 1; index < points.length; index += 1) {
+    const from = points[index - 1];
+    const to = points[index];
+    const fromMs = new Date(from.recordedAt).getTime();
+    const toMs = new Date(to.recordedAt).getTime();
+    const stepCount = 5;
+
+    for (let step = 1; step <= stepCount; step += 1) {
+      const ratio = step / stepCount;
+      routePoints.push({
+        lat: from.lat + (to.lat - from.lat) * ratio,
+        lng: from.lng + (to.lng - from.lng) * ratio,
+        accuracy: to.accuracy,
+        recordedAt: new Date(fromMs + (toMs - fromMs) * ratio).toISOString(),
+      });
+    }
+  }
+
+  return routePoints;
+}
+
+function createDevDummyTrip(index: number, nowMs = Date.now()): TripRecord {
+  const dailyStartShiftMinutes = [-6, 3, -2, 7][index % 4];
+  const routeDurationShiftMinutes = [-2, 0, 3][index % 3];
+  const latJitter = ((index % 5) - 2) * 0.00003;
+  const lngJitter = (((index * 2) % 5) - 2) * 0.000035;
+  const startDate = new Date(nowMs);
+  startDate.setDate(startDate.getDate() - (index + 1));
+  startDate.setHours(8, 10 + dailyStartShiftMinutes, 0, 0);
+
+  const checkpointPoints = DEV_ROUTE_POINTS.map((routePoint, order) => {
+    const adjustedOffset =
+      routePoint.offsetMinutes + (order === 0 ? 0 : routeDurationShiftMinutes * order);
+    const recordedAt = new Date(startDate.getTime() + adjustedOffset * 60_000).toISOString();
+
+    return createGpsPointFromValues(
+      routePoint.lat + latJitter,
+      routePoint.lng + lngJitter,
+      recordedAt,
+      8 + (index % 4),
+    );
+  });
+  const checkpoints = checkpointPoints.map((point, order) => {
+    const routePoint = DEV_ROUTE_POINTS[order];
+    const type =
+      order === 0 ? 'start' : order === checkpointPoints.length - 1 ? 'end' : routePoint.type;
+
+    return createCheckpoint(point, order, type, routePoint.name);
+  });
+  const segments = checkpoints.slice(1).map((checkpoint, segmentIndex) =>
+    createSegmentFromCheckpoints(
+      checkpoints[segmentIndex],
+      checkpoint,
+      DEV_ROUTE_POINTS[segmentIndex + 1].transportModeFromPrevious,
+    ),
+  );
+  const points = interpolateDevRoutePoints(checkpointPoints);
+  const startedAt = checkpointPoints[0].recordedAt;
+  const endedAt = checkpointPoints.at(-1)?.recordedAt ?? startedAt;
+
+  return {
+    id: generateId(),
+    name: `개발 더미 ${index + 1} · ${generateDefaultTripName(startedAt)}`,
+    createdAt: startedAt,
+    updatedAt: endedAt,
+    startedAt,
+    endedAt,
+    totalDurationMs: calculateTotalDuration(startedAt, endedAt),
+    pausedDurationMs: 0,
+    visibility: 'private',
+    nickname: null,
+    userId: null,
+    routeGroupId: null,
+    points,
+    checkpoints,
+    segments,
+    pauseRanges: [],
+    memo: '개발 테스트용 더미 이전 기록',
+    appVersion: APP_VERSION,
+  };
+}
+
 function getSegmentLabel(segment: Segment, checkpoints: Checkpoint[]) {
   const from = checkpoints.find((checkpoint) => checkpoint.id === segment.fromCheckpointId);
   const to = checkpoints.find((checkpoint) => checkpoint.id === segment.toCheckpointId);
@@ -547,6 +768,9 @@ function App() {
   const [storageError, setStorageError] = useState<string | null>(null);
   const [draftHydrated, setDraftHydrated] = useState(false);
   const [now, setNow] = useState(Date.now());
+  const [devSimulation, setDevSimulation] = useState<DevSimulationState>(() =>
+    createDefaultDevSimulationState(),
+  );
 
   const currentTripRef = useRef<TripRecord | null>(currentTrip);
   const checkpointPlacesRef = useRef<SavedCheckpointPlace[]>(checkpointPlaces);
@@ -554,6 +778,7 @@ function App() {
   const checkpointPromptRef = useRef<CheckpointPromptState | null>(checkpointPrompt);
   const recordingStatusRef = useRef<RecordingStatus>(recordingStatus);
   const activePauseStartedAtRef = useRef<string | null>(activePauseStartedAt);
+  const devSimulationRef = useRef<DevSimulationState>(devSimulation);
   const showCheckpointEditorRef = useRef(showCheckpointEditor);
   const lastSavedPointAtRef = useRef<number>(0);
   const draftPersistTimerRef = useRef<number | null>(null);
@@ -594,11 +819,15 @@ function App() {
   }, [activePauseStartedAt]);
 
   useEffect(() => {
+    devSimulationRef.current = devSimulation;
+  }, [devSimulation]);
+
+  useEffect(() => {
     showCheckpointEditorRef.current = showCheckpointEditor;
   }, [showCheckpointEditor]);
 
   useEffect(() => {
-    const interval = window.setInterval(() => setNow(Date.now()), 1000);
+    const interval = window.setInterval(() => setNow(getCurrentTimestampMs()), 1000);
     return () => window.clearInterval(interval);
   }, []);
 
@@ -726,9 +955,14 @@ function App() {
 
     const watchId = navigator.geolocation.watchPosition(
       (position) => {
+        if (devSimulationRef.current.enabled) {
+          return;
+        }
+
         const point = positionToPoint(position);
         setCurrentPosition(point);
         setGpsStatus(gpsStatusFromPoint(point));
+        setNow(new Date(point.recordedAt).getTime());
 
         const activeTrip = currentTripRef.current;
         if (recordingStatusRef.current !== 'recording' || !activeTrip) {
@@ -751,6 +985,10 @@ function App() {
         );
       },
       (error) => {
+        if (devSimulationRef.current.enabled) {
+          return;
+        }
+
         setGpsStatus(getGeolocationErrorMessage(error));
       },
       {
@@ -810,6 +1048,63 @@ function App() {
 
   function requestConfirmation(state: ConfirmState) {
     setConfirmState(state);
+  }
+
+  function getCurrentTimestampMs() {
+    const devState = devSimulationRef.current;
+
+    if (devState.enabled) {
+      const devTimestampMs = parseDateTimeLocalInput(devState.recordedAt);
+
+      if (devTimestampMs !== null) {
+        return devTimestampMs;
+      }
+    }
+
+    return Date.now();
+  }
+
+  function getCurrentIso() {
+    return new Date(getCurrentTimestampMs()).toISOString();
+  }
+
+  function getDevGpsStatus(point: GpsPoint): GpsStatus {
+    return {
+      label: '개발 위치 시뮬레이션',
+      detail: `${point.lat.toFixed(5)}, ${point.lng.toFixed(5)} · ${formatTime(
+        point.recordedAt,
+      )}`,
+      tone: 'warning',
+    };
+  }
+
+  function syncCurrentPosition(point: GpsPoint, source: 'gps' | 'dev') {
+    setCurrentPosition(point);
+    setGpsStatus(source === 'dev' ? getDevGpsStatus(point) : gpsStatusFromPoint(point));
+    setNow(new Date(point.recordedAt).getTime());
+  }
+
+  function appendRoutePointIfRecording(point: GpsPoint) {
+    const activeTrip = currentTripRef.current;
+
+    if (recordingStatusRef.current !== 'recording' || !activeTrip) {
+      return false;
+    }
+
+    if (!shouldSaveRoutePoint(activeTrip, point)) {
+      return false;
+    }
+
+    const updatedTrip = {
+      ...activeTrip,
+      points: [...activeTrip.points, point],
+      updatedAt: point.recordedAt,
+    };
+
+    currentTripRef.current = updatedTrip;
+    lastSavedPointAtRef.current = new Date(point.recordedAt).getTime();
+    setCurrentTrip((trip) => (trip?.id === updatedTrip.id ? updatedTrip : trip));
+    return true;
   }
 
   async function requestScreenWakeLock() {
@@ -1077,6 +1372,19 @@ function App() {
 
   function requestFreshPosition(): Promise<GpsPoint> {
     return new Promise((resolve, reject) => {
+      const devState = devSimulationRef.current;
+
+      if (devState.enabled) {
+        try {
+          const point = createDevSimulationPoint(devState);
+          syncCurrentPosition(point, 'dev');
+          resolve(point);
+        } catch (error) {
+          reject(error);
+        }
+        return;
+      }
+
       if (!('geolocation' in navigator)) {
         reject(new Error('이 브라우저에서는 위치 정보를 사용할 수 없습니다.'));
         return;
@@ -1091,8 +1399,7 @@ function App() {
       navigator.geolocation.getCurrentPosition(
         (position) => {
           const point = positionToPoint(position);
-          setCurrentPosition(point);
-          setGpsStatus(gpsStatusFromPoint(point));
+          syncCurrentPosition(point, 'gps');
           resolve(point);
         },
         (error) => {
@@ -1309,7 +1616,7 @@ function App() {
 
   function pauseRecording() {
     setConfirmState(null);
-    const startedAt = new Date().toISOString();
+    const startedAt = getCurrentIso();
     setActivePauseStartedAt(startedAt);
     setRecordingStatus('paused');
     setCurrentTrip((trip) => (trip ? { ...trip, updatedAt: startedAt } : trip));
@@ -1323,7 +1630,7 @@ function App() {
       return;
     }
 
-    const endedAt = new Date().toISOString();
+    const endedAt = getCurrentIso();
     const pauseRange: PauseRange = {
       startedAt: pauseStartedAt,
       endedAt,
@@ -1342,7 +1649,7 @@ function App() {
     );
     setActivePauseStartedAt(null);
     setRecordingStatus('recording');
-    lastSavedPointAtRef.current = Date.now();
+    lastSavedPointAtRef.current = getCurrentTimestampMs();
     showNotice('재개! 다시 이동 경로를 기록합니다.');
   }
 
@@ -1367,7 +1674,7 @@ function App() {
 
     try {
       const freshPoint = await requestFreshPosition().catch(() => null);
-      const endedAt = new Date().toISOString();
+      const endedAt = getCurrentIso();
       const point = freshPoint
         ? { ...freshPoint, recordedAt: endedAt }
         : currentPosition
@@ -1732,6 +2039,130 @@ function App() {
       setView('home');
     } catch (error) {
       showNotice(error instanceof Error ? error.message : '전체 데이터 삭제에 실패했습니다.');
+    }
+  }
+
+  function updateDevSimulation(patch: Partial<DevSimulationState>) {
+    const nextState = {
+      ...devSimulationRef.current,
+      ...patch,
+    };
+
+    devSimulationRef.current = nextState;
+    setDevSimulation(nextState);
+
+    const timestampMs = parseDateTimeLocalInput(nextState.recordedAt);
+    if (nextState.enabled && timestampMs !== null) {
+      setNow(timestampMs);
+    }
+  }
+
+  function setDevSimulationEnabled(enabled: boolean) {
+    const nextState = {
+      ...devSimulationRef.current,
+      enabled,
+    };
+
+    updateDevSimulation({ enabled });
+
+    if (!enabled) {
+      setGpsStatus(getInitialGpsStatus());
+      showNotice('개발 위치 시뮬레이션을 껐습니다.');
+      return;
+    }
+
+    try {
+      syncCurrentPosition(createDevSimulationPoint(nextState), 'dev');
+      showNotice('개발 위치 시뮬레이션을 켰습니다.');
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : '개발 위치 적용에 실패했습니다.');
+    }
+  }
+
+  function selectDevRoutePoint(routePoint: DevRoutePoint) {
+    const nextState = {
+      ...devSimulationRef.current,
+      lat: routePoint.lat.toFixed(6),
+      lng: routePoint.lng.toFixed(6),
+    };
+
+    updateDevSimulation(nextState);
+
+    if (!nextState.enabled) {
+      return;
+    }
+
+    try {
+      syncCurrentPosition(createDevSimulationPoint(nextState), 'dev');
+    } catch {
+      // The manual apply button will show validation feedback.
+    }
+  }
+
+  function shiftDevSimulationTime(minutes: number) {
+    const currentTimestampMs = parseDateTimeLocalInput(devSimulationRef.current.recordedAt);
+
+    if (currentTimestampMs === null) {
+      showNotice('개발 테스트 시간을 확인해주세요.');
+      return;
+    }
+
+    const nextState = {
+      ...devSimulationRef.current,
+      recordedAt: formatDateTimeLocalInput(new Date(currentTimestampMs + minutes * 60_000)),
+    };
+
+    updateDevSimulation(nextState);
+
+    if (!nextState.enabled) {
+      return;
+    }
+
+    try {
+      syncCurrentPosition(createDevSimulationPoint(nextState), 'dev');
+    } catch {
+      // The manual apply button will show validation feedback.
+    }
+  }
+
+  function applyDevSimulationPosition() {
+    if (!devSimulationRef.current.enabled) {
+      showNotice('개발 위치 시뮬레이션을 먼저 켜주세요.');
+      return;
+    }
+
+    try {
+      const point = createDevSimulationPoint(devSimulationRef.current);
+      syncCurrentPosition(point, 'dev');
+      const appended = appendRoutePointIfRecording(point);
+      showNotice(
+        appended
+          ? '개발 위치를 현재 기록 경로에 추가했습니다.'
+          : '개발 위치를 현재 위치로 적용했습니다.',
+      );
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : '개발 위치 적용에 실패했습니다.');
+    }
+  }
+
+  async function generateDevDummyTrips() {
+    const rawCount = Math.trunc(devSimulationRef.current.dummyCount);
+    const count = Number.isFinite(rawCount)
+      ? clampNumber(rawCount, 1, DEV_DUMMY_MAX_COUNT)
+      : 1;
+    const dummyTrips = Array.from({ length: count }, (_, index) =>
+      createDevDummyTrip(index, getCurrentTimestampMs()),
+    );
+
+    try {
+      setStorageError(null);
+      for (const trip of dummyTrips) {
+        await storageAdapter.saveTrip(trip);
+      }
+      await loadTrips();
+      showNotice(`개발 더미 이전 기록 ${count}개를 생성했습니다.`);
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : '더미 기록 생성에 실패했습니다.');
     }
   }
 
@@ -2340,6 +2771,146 @@ function App() {
     );
   }
 
+  function renderDevTools() {
+    return (
+      <section className="panel dev-tools-panel">
+        <div className="panel-title-row">
+          <h2>개발 테스트</h2>
+          <span className={`dev-mode-badge ${devSimulation.enabled ? 'on' : ''}`}>
+            {devSimulation.enabled ? '시뮬레이션 중' : '실제 GPS'}
+          </span>
+        </div>
+
+        <label className="setting-toggle">
+          <input
+            checked={devSimulation.enabled}
+            onChange={(event) => setDevSimulationEnabled(event.target.checked)}
+            type="checkbox"
+          />
+          <span>
+            <MapPin aria-hidden="true" />
+            <strong>입력한 좌표와 시간 사용</strong>
+            <small>출발, 체크, 도착 위치에 적용됩니다.</small>
+          </span>
+        </label>
+
+        <div aria-label="개발 테스트 위치 프리셋" className="dev-preset-grid">
+          {DEV_ROUTE_POINTS.map((routePoint) => (
+            <button
+              className="secondary-button compact-button"
+              key={routePoint.key}
+              onClick={() => selectDevRoutePoint(routePoint)}
+              type="button"
+            >
+              <MapPin aria-hidden="true" />
+              {routePoint.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="dev-form-grid">
+          <label>
+            테스트 시간
+            <input
+              onChange={(event) => updateDevSimulation({ recordedAt: event.target.value })}
+              type="datetime-local"
+              value={devSimulation.recordedAt}
+            />
+          </label>
+          <label>
+            위도
+            <input
+              inputMode="decimal"
+              onChange={(event) => updateDevSimulation({ lat: event.target.value })}
+              step="0.000001"
+              type="number"
+              value={devSimulation.lat}
+            />
+          </label>
+          <label>
+            경도
+            <input
+              inputMode="decimal"
+              onChange={(event) => updateDevSimulation({ lng: event.target.value })}
+              step="0.000001"
+              type="number"
+              value={devSimulation.lng}
+            />
+          </label>
+          <label>
+            정확도(m)
+            <input
+              min="0"
+              onChange={(event) => updateDevSimulation({ accuracy: event.target.value })}
+              step="1"
+              type="number"
+              value={devSimulation.accuracy}
+            />
+          </label>
+        </div>
+
+        <div className="button-row dev-tool-actions">
+          <button
+            className="secondary-button compact-button"
+            onClick={() => shiftDevSimulationTime(5)}
+            type="button"
+          >
+            <RotateCcw aria-hidden="true" />
+            +5분
+          </button>
+          <button
+            className="secondary-button compact-button"
+            onClick={() => shiftDevSimulationTime(15)}
+            type="button"
+          >
+            <RotateCcw aria-hidden="true" />
+            +15분
+          </button>
+          <button
+            className="primary-button"
+            disabled={!devSimulation.enabled}
+            onClick={applyDevSimulationPosition}
+            type="button"
+          >
+            <Check aria-hidden="true" />
+            현재 위치 적용
+          </button>
+        </div>
+
+        <div className="dev-dummy-tools">
+          <label>
+            더미 이전 기록
+            <input
+              max={DEV_DUMMY_MAX_COUNT}
+              min="1"
+              onChange={(event) =>
+                updateDevSimulation({
+                  dummyCount: clampNumber(
+                    Math.trunc(Number(event.target.value) || 1),
+                    1,
+                    DEV_DUMMY_MAX_COUNT,
+                  ),
+                })
+              }
+              type="number"
+              value={devSimulation.dummyCount}
+            />
+          </label>
+          <button
+            className="primary-button"
+            onClick={() => {
+              void generateDevDummyTrips();
+            }}
+            type="button"
+          >
+            <Save aria-hidden="true" />
+            기록 생성
+          </button>
+        </div>
+      </section>
+    );
+  }
+
   function renderSettings() {
     return (
       <section className="detail-layout">
@@ -2385,6 +2956,7 @@ function App() {
             </span>
           </label>
         </section>
+        {renderDevTools()}
         <section className="panel">
           <h2>위치 권한 안내</h2>
           <p>
