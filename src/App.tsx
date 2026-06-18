@@ -107,9 +107,11 @@ interface MapCheckpointEditorState {
 
 interface DevSimulationState {
   enabled: boolean;
-  lat: string;
-  lng: string;
-  accuracy: string;
+  selectedPoint: {
+    lat: number;
+    lng: number;
+    accuracy: number | null;
+  } | null;
   recordedAt: string;
   dummyCount: number;
 }
@@ -194,13 +196,10 @@ function clampNumber(value: number, min: number, max: number) {
 function createDefaultDevSimulationState(): DevSimulationState {
   const now = new Date();
   now.setSeconds(0, 0);
-  const firstPoint = DEV_ROUTE_POINTS[0];
 
   return {
     enabled: false,
-    lat: firstPoint.lat.toFixed(6),
-    lng: firstPoint.lng.toFixed(6),
-    accuracy: '8',
+    selectedPoint: null,
     recordedAt: formatDateTimeLocalInput(now),
     dummyCount: 3,
   };
@@ -519,29 +518,26 @@ function createTripFromStart(point: GpsPoint): TripRecord {
 }
 
 function createDevSimulationPoint(state: DevSimulationState): GpsPoint {
-  const lat = Number(state.lat);
-  const lng = Number(state.lng);
-  const accuracy = state.accuracy.trim().length > 0 ? Number(state.accuracy) : 8;
+  const selectedPoint = state.selectedPoint;
   const recordedAtMs = parseDateTimeLocalInput(state.recordedAt);
 
   if (
-    !Number.isFinite(lat) ||
-    lat < -90 ||
-    lat > 90 ||
-    !Number.isFinite(lng) ||
-    lng < -180 ||
-    lng > 180 ||
-    !Number.isFinite(accuracy) ||
-    accuracy < 0 ||
+    !selectedPoint ||
+    !Number.isFinite(selectedPoint.lat) ||
+    selectedPoint.lat < -90 ||
+    selectedPoint.lat > 90 ||
+    !Number.isFinite(selectedPoint.lng) ||
+    selectedPoint.lng < -180 ||
+    selectedPoint.lng > 180 ||
     recordedAtMs === null
   ) {
-    throw new Error('개발 테스트 좌표와 시간을 확인해주세요.');
+    throw new Error('지도에서 개발 테스트 위치를 선택하고 시간을 확인해주세요.');
   }
 
   return {
-    lat,
-    lng,
-    accuracy,
+    lat: selectedPoint.lat,
+    lng: selectedPoint.lng,
+    accuracy: selectedPoint.accuracy,
     recordedAt: new Date(recordedAtMs).toISOString(),
   };
 }
@@ -2057,6 +2053,16 @@ function App() {
     }
   }
 
+  function syncDevSimulationPosition(
+    state: DevSimulationState,
+    mode: 'current-only' | 'append-route',
+  ) {
+    const point = createDevSimulationPoint(state);
+    syncCurrentPosition(point, 'dev');
+
+    return mode === 'append-route' ? appendRoutePointIfRecording(point) : false;
+  }
+
   function setDevSimulationEnabled(enabled: boolean) {
     const nextState = {
       ...devSimulationRef.current,
@@ -2071,31 +2077,66 @@ function App() {
       return;
     }
 
+    if (!nextState.selectedPoint) {
+      setGpsStatus({
+        label: '개발 위치 선택 대기',
+        detail: '지도에서 테스트 위치를 선택해주세요.',
+        tone: 'warning',
+      });
+      showNotice('개발모드를 켰습니다. 지도에서 테스트 위치를 선택해주세요.');
+      return;
+    }
+
     try {
-      syncCurrentPosition(createDevSimulationPoint(nextState), 'dev');
+      syncDevSimulationPosition(nextState, 'current-only');
       showNotice('개발 위치 시뮬레이션을 켰습니다.');
     } catch (error) {
       showNotice(error instanceof Error ? error.message : '개발 위치 적용에 실패했습니다.');
     }
   }
 
-  function selectDevRoutePoint(routePoint: DevRoutePoint) {
+  function selectDevMapPoint(point: { lat: number; lng: number }) {
+    if (!devSimulationRef.current.enabled) {
+      return;
+    }
+
     const nextState = {
       ...devSimulationRef.current,
-      lat: routePoint.lat.toFixed(6),
-      lng: routePoint.lng.toFixed(6),
+      selectedPoint: {
+        lat: point.lat,
+        lng: point.lng,
+        accuracy: 8,
+      },
     };
 
     updateDevSimulation(nextState);
 
-    if (!nextState.enabled) {
-      return;
+    try {
+      const appended = syncDevSimulationPosition(nextState, 'append-route');
+      showNotice(
+        appended
+          ? '지도에서 선택한 위치를 현재 기록 경로에 추가했습니다.'
+          : '지도에서 선택한 위치를 적용했습니다.',
+      );
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : '개발 위치 적용에 실패했습니다.');
     }
+  }
+
+  function updateDevSimulationTime(recordedAt: string) {
+    const nextState = {
+      ...devSimulationRef.current,
+      recordedAt,
+    };
+
+    updateDevSimulation(nextState);
 
     try {
-      syncCurrentPosition(createDevSimulationPoint(nextState), 'dev');
+      if (nextState.enabled && nextState.selectedPoint) {
+        syncDevSimulationPosition(nextState, 'current-only');
+      }
     } catch {
-      // The manual apply button will show validation feedback.
+      // The explicit apply action will show validation feedback.
     }
   }
 
@@ -2119,7 +2160,9 @@ function App() {
     }
 
     try {
-      syncCurrentPosition(createDevSimulationPoint(nextState), 'dev');
+      if (nextState.selectedPoint) {
+        syncDevSimulationPosition(nextState, 'current-only');
+      }
     } catch {
       // The manual apply button will show validation feedback.
     }
@@ -2132,9 +2175,7 @@ function App() {
     }
 
     try {
-      const point = createDevSimulationPoint(devSimulationRef.current);
-      syncCurrentPosition(point, 'dev');
-      const appended = appendRoutePointIfRecording(point);
+      const appended = syncDevSimulationPosition(devSimulationRef.current, 'append-route');
       showNotice(
         appended
           ? '개발 위치를 현재 기록 경로에 추가했습니다.'
@@ -2228,10 +2269,13 @@ function App() {
           <MapView
             currentPosition={currentPosition}
             height="420px"
+            mapSelectionEnabled={devSimulation.enabled}
+            onMapPointSelect={selectDevMapPoint}
             points={[]}
             savedPlaces={checkpointPlaces}
             viewKey="home"
           />
+          {renderDevMapPanel()}
         </div>
 
         <div className="status-strip">
@@ -2265,13 +2309,16 @@ function App() {
         <MapView
           checkpoints={currentTrip.checkpoints}
           currentPosition={currentPosition}
+          mapSelectionEnabled={devSimulation.enabled}
           onCheckpointSelect={openCurrentMapCheckpointEditor}
+          onMapPointSelect={selectDevMapPoint}
           segments={currentTrip.segments}
           points={currentTrip.points}
           savedPlaces={checkpointPlaces}
           height="430px"
           viewKey={`recording-${currentTrip.id}`}
         />
+        {renderDevMapPanel()}
         <div className={`bottom-controls ${recordingStatus === 'paused' ? 'paused' : ''}`}>
           {recordingStatus === 'paused' ? (
             <button className="primary-button" onClick={resumeRecording} type="button">
@@ -2771,83 +2818,31 @@ function App() {
     );
   }
 
-  function renderDevTools() {
+  function renderDevSimulationControls() {
+    const selectedPoint = devSimulation.selectedPoint;
+
     return (
-      <section className="panel dev-tools-panel">
-        <div className="panel-title-row">
-          <h2>개발 테스트</h2>
-          <span className={`dev-mode-badge ${devSimulation.enabled ? 'on' : ''}`}>
-            {devSimulation.enabled ? '시뮬레이션 중' : '실제 GPS'}
-          </span>
+      <div className="dev-map-controls">
+        <div className="dev-selected-point">
+          <MapPin aria-hidden="true" />
+          <div>
+            <strong>지도 선택 지점</strong>
+            <span>
+              {selectedPoint
+                ? `${selectedPoint.lat.toFixed(5)}, ${selectedPoint.lng.toFixed(5)}`
+                : '미선택'}
+            </span>
+          </div>
         </div>
 
-        <label className="setting-toggle">
+        <label>
+          테스트 시간
           <input
-            checked={devSimulation.enabled}
-            onChange={(event) => setDevSimulationEnabled(event.target.checked)}
-            type="checkbox"
+            onChange={(event) => updateDevSimulationTime(event.target.value)}
+            type="datetime-local"
+            value={devSimulation.recordedAt}
           />
-          <span>
-            <MapPin aria-hidden="true" />
-            <strong>입력한 좌표와 시간 사용</strong>
-            <small>출발, 체크, 도착 위치에 적용됩니다.</small>
-          </span>
         </label>
-
-        <div aria-label="개발 테스트 위치 프리셋" className="dev-preset-grid">
-          {DEV_ROUTE_POINTS.map((routePoint) => (
-            <button
-              className="secondary-button compact-button"
-              key={routePoint.key}
-              onClick={() => selectDevRoutePoint(routePoint)}
-              type="button"
-            >
-              <MapPin aria-hidden="true" />
-              {routePoint.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="dev-form-grid">
-          <label>
-            테스트 시간
-            <input
-              onChange={(event) => updateDevSimulation({ recordedAt: event.target.value })}
-              type="datetime-local"
-              value={devSimulation.recordedAt}
-            />
-          </label>
-          <label>
-            위도
-            <input
-              inputMode="decimal"
-              onChange={(event) => updateDevSimulation({ lat: event.target.value })}
-              step="0.000001"
-              type="number"
-              value={devSimulation.lat}
-            />
-          </label>
-          <label>
-            경도
-            <input
-              inputMode="decimal"
-              onChange={(event) => updateDevSimulation({ lng: event.target.value })}
-              step="0.000001"
-              type="number"
-              value={devSimulation.lng}
-            />
-          </label>
-          <label>
-            정확도(m)
-            <input
-              min="0"
-              onChange={(event) => updateDevSimulation({ accuracy: event.target.value })}
-              step="1"
-              type="number"
-              value={devSimulation.accuracy}
-            />
-          </label>
-        </div>
 
         <div className="button-row dev-tool-actions">
           <button
@@ -2868,14 +2863,50 @@ function App() {
           </button>
           <button
             className="primary-button"
-            disabled={!devSimulation.enabled}
+            disabled={!devSimulation.enabled || !selectedPoint}
             onClick={applyDevSimulationPosition}
             type="button"
           >
             <Check aria-hidden="true" />
-            현재 위치 적용
+            선택 위치 적용
           </button>
         </div>
+      </div>
+    );
+  }
+
+  function renderDevMapPanel() {
+    if (!devSimulation.enabled) {
+      return null;
+    }
+
+    return <section className="panel dev-map-panel">{renderDevSimulationControls()}</section>;
+  }
+
+  function renderDevTools() {
+    return (
+      <section className="panel dev-tools-panel">
+        <div className="panel-title-row">
+          <h2>개발 테스트</h2>
+          <span className={`dev-mode-badge ${devSimulation.enabled ? 'on' : ''}`}>
+            {devSimulation.enabled ? '시뮬레이션 중' : '실제 GPS'}
+          </span>
+        </div>
+
+        <label className="setting-toggle">
+          <input
+            checked={devSimulation.enabled}
+            onChange={(event) => setDevSimulationEnabled(event.target.checked)}
+            type="checkbox"
+          />
+          <span>
+            <MapPin aria-hidden="true" />
+            <strong>지도 선택 위치 사용</strong>
+            <small>출발, 체크, 도착 위치에 적용됩니다.</small>
+          </span>
+        </label>
+
+        {renderDevSimulationControls()}
 
         <div className="dev-dummy-tools">
           <label>

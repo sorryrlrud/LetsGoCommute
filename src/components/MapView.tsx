@@ -23,6 +23,8 @@ interface MapViewProps {
   height?: string;
   viewKey?: string;
   onCheckpointSelect?: (checkpointId: string) => void;
+  onMapPointSelect?: (point: { lat: number; lng: number }) => void;
+  mapSelectionEnabled?: boolean;
 }
 
 const fallbackCenter: LatLngExpression = [37.5665, 126.978];
@@ -247,6 +249,8 @@ export function MapView({
   height = '360px',
   viewKey = 'default',
   onCheckpointSelect,
+  onMapPointSelect,
+  mapSelectionEnabled = false,
 }: MapViewProps) {
   const mapElementRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -318,6 +322,27 @@ export function MapView({
 
   useEffect(() => {
     const map = mapRef.current;
+
+    if (!map || !mapSelectionEnabled || !onMapPointSelect) {
+      return;
+    }
+
+    const handleMapClick = (event: L.LeafletMouseEvent) => {
+      onMapPointSelect({
+        lat: event.latlng.lat,
+        lng: event.latlng.lng,
+      });
+    };
+
+    map.on('click', handleMapClick);
+
+    return () => {
+      map.off('click', handleMapClick);
+    };
+  }, [mapSelectionEnabled, onMapPointSelect]);
+
+  useEffect(() => {
+    const map = mapRef.current;
     const layers = layersRef.current;
 
     if (!map || !layers) {
@@ -370,7 +395,10 @@ export function MapView({
       }).bindPopup(buildCheckpointPopup(checkpoint, index, segment));
 
       if (onCheckpointSelect) {
-        marker.on('click', () => onCheckpointSelect(checkpoint.id));
+        marker.on('click', (event) => {
+          L.DomEvent.stopPropagation(event);
+          onCheckpointSelect(checkpoint.id);
+        });
       }
 
       marker.addTo(layers);
@@ -426,7 +454,10 @@ export function MapView({
   ]);
 
   return (
-    <div className="map-shell" style={{ minHeight: height }}>
+    <div
+      className={`map-shell ${mapSelectionEnabled ? 'map-selectable' : ''}`}
+      style={{ minHeight: height }}
+    >
       <div ref={mapElementRef} className="leaflet-map" style={{ height }} />
       <button
         aria-label="현위치로 복귀"

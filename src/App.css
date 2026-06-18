@@ -216,6 +216,12 @@ button:disabled {
   min-width: 0;
 }
 
+.map-stage {
+  align-content: start;
+  display: grid;
+  gap: 10px;
+}
+
 .map-shell {
   background: #ffffff;
   border: 2px solid #17211f;
@@ -230,6 +236,10 @@ button:disabled {
 .leaflet-map {
   min-height: 260px;
   width: 100%;
+}
+
+.map-selectable .leaflet-container {
+  cursor: crosshair;
 }
 
 .map-shell .leaflet-top,
@@ -911,6 +921,10 @@ textarea {
   gap: 16px;
 }
 
+.dev-map-panel {
+  padding: 14px;
+}
+
 .dev-mode-badge {
   background: #f9fbf7;
   border: 2px solid #17211f;
@@ -927,26 +941,47 @@ textarea {
   color: #17211f;
 }
 
-.dev-preset-grid,
-.dev-form-grid {
+.dev-map-controls {
   display: grid;
   gap: 10px;
 }
 
-.dev-preset-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.dev-form-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.dev-form-grid label,
+.dev-map-controls label,
 .dev-dummy-tools label {
   color: #17211f;
   display: grid;
   font-weight: 900;
   gap: 8px;
+}
+
+.dev-selected-point {
+  align-items: center;
+  background: #f9fbf7;
+  border: 2px dashed #95a39f;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 10px 12px;
+}
+
+.dev-selected-point svg {
+  color: #346df1;
+  height: 20px;
+  width: 20px;
+}
+
+.dev-selected-point div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dev-selected-point span {
+  color: #5d6864;
+  font-size: 0.88rem;
+  font-weight: 850;
+  overflow-wrap: anywhere;
 }
 
 .compact-button {
@@ -1162,11 +1197,6 @@ textarea {
     min-height: auto;
   }
 
-  .dev-preset-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .dev-form-grid,
   .dev-dummy-tools {
     grid-template-columns: 1fr;
   }
