@@ -4,6 +4,7 @@ import {
   ArrowUpToLine,
   Bell,
   BellOff,
+  Clock,
   Check,
   GitCompareArrows,
   Home,
@@ -69,6 +70,7 @@ const CHECKPOINT_PLACE_MATCH_RADIUS_METERS = 100;
 const AUTO_CHECKPOINT_RADIUS_METERS = 80;
 const AUTO_CHECKPOINT_MIN_DISTANCE_FROM_LAST_METERS = 120;
 const DRAFT_STALE_PAUSE_MS = 90_000;
+const DEV_ROUTE_POINT_MATCH_EPSILON = 0.00001;
 
 type AppView =
   | 'home'
@@ -211,6 +213,38 @@ function createDefaultDevSimulationState(): DevSimulationState {
     recordedAt: formatDateTimeLocalInput(now),
     dummyCount: 3,
   };
+}
+
+function findMatchingDevRoutePoint(point: DevSimulationState['selectedPoint']) {
+  if (!point) {
+    return null;
+  }
+
+  return (
+    DEV_ROUTE_POINTS.find(
+      (routePoint) =>
+        Math.abs(routePoint.lat - point.lat) <= DEV_ROUTE_POINT_MATCH_EPSILON &&
+        Math.abs(routePoint.lng - point.lng) <= DEV_ROUTE_POINT_MATCH_EPSILON,
+    ) ?? null
+  );
+}
+
+function getDevRouteRecordedAt(routePoint: DevRoutePoint, state: DevSimulationState) {
+  const recordedAtMs = parseDateTimeLocalInput(state.recordedAt);
+
+  if (recordedAtMs === null) {
+    return state.recordedAt;
+  }
+
+  const matchedRoutePoint = findMatchingDevRoutePoint(state.selectedPoint);
+  const baseOffsetMinutes = matchedRoutePoint?.offsetMinutes ?? routePoint.offsetMinutes;
+  const baseMs = recordedAtMs - baseOffsetMinutes * 60_000;
+
+  return formatDateTimeLocalInput(new Date(baseMs + routePoint.offsetMinutes * 60_000));
+}
+
+function formatDevRouteOffset(minutes: number) {
+  return minutes === 0 ? '출발' : `+${minutes}분`;
 }
 
 function createDefaultAppSettings(): AppSettings {
@@ -1638,7 +1672,7 @@ function App() {
       showNotice(
         source === 'auto'
           ? `${checkpoint.name || '체크포인트'} 자동 저장 완료!`
-          : '체크포인트 자동 저장 완료! 방금 구간을 바로 정리할 수 있습니다.',
+          : '체크포인트 저장 완료! 방금 구간을 바로 정리할 수 있습니다.',
       );
       void showCheckpointNotification(checkpoint, source);
     } catch (error) {
@@ -2286,6 +2320,36 @@ function App() {
         appended
           ? '지도에서 선택한 위치를 현재 기록 경로에 추가했습니다.'
           : '지도에서 선택한 위치를 적용했습니다.',
+      );
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : '개발 위치 적용에 실패했습니다.');
+    }
+  }
+
+  function selectDevRoutePoint(routePoint: DevRoutePoint) {
+    const nextState = {
+      ...devSimulationRef.current,
+      selectedPoint: {
+        lat: routePoint.lat,
+        lng: routePoint.lng,
+        accuracy: 8,
+      },
+      recordedAt: getDevRouteRecordedAt(routePoint, devSimulationRef.current),
+    };
+
+    updateDevSimulation(nextState);
+
+    if (!nextState.enabled) {
+      showNotice(`${routePoint.label} 테스트 위치를 선택했습니다.`);
+      return;
+    }
+
+    try {
+      const appended = syncDevSimulationPosition(nextState, 'append-route');
+      showNotice(
+        appended
+          ? `${routePoint.label} 위치를 현재 기록 경로에 추가했습니다.`
+          : `${routePoint.label} 위치를 적용했습니다.`,
       );
     } catch (error) {
       showNotice(error instanceof Error ? error.message : '개발 위치 적용에 실패했습니다.');
@@ -3028,6 +3092,29 @@ function App() {
           </div>
         </div>
 
+        <div className="dev-route-grid" aria-label="개발 테스트 위치">
+          {DEV_ROUTE_POINTS.map((routePoint) => {
+            const selected =
+              selectedPoint &&
+              Math.abs(selectedPoint.lat - routePoint.lat) <= DEV_ROUTE_POINT_MATCH_EPSILON &&
+              Math.abs(selectedPoint.lng - routePoint.lng) <= DEV_ROUTE_POINT_MATCH_EPSILON;
+
+            return (
+              <button
+                aria-pressed={selected ? 'true' : 'false'}
+                className={`dev-route-button ${selected ? 'selected' : ''}`}
+                key={routePoint.key}
+                onClick={() => selectDevRoutePoint(routePoint)}
+                type="button"
+              >
+                <MapPin aria-hidden="true" />
+                <span>{routePoint.label}</span>
+                <small>{formatDevRouteOffset(routePoint.offsetMinutes)}</small>
+              </button>
+            );
+          })}
+        </div>
+
         <label>
           테스트 시간
           <input
@@ -3043,7 +3130,7 @@ function App() {
             onClick={() => shiftDevSimulationTime(5)}
             type="button"
           >
-            <RotateCcw aria-hidden="true" />
+            <Clock aria-hidden="true" />
             +5분
           </button>
           <button
@@ -3051,7 +3138,7 @@ function App() {
             onClick={() => shiftDevSimulationTime(15)}
             type="button"
           >
-            <RotateCcw aria-hidden="true" />
+            <Clock aria-hidden="true" />
             +15분
           </button>
           <button

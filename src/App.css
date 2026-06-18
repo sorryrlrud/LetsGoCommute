@@ -990,6 +990,51 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.dev-route-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.dev-route-button {
+  align-items: center;
+  background: #ffffff;
+  border: 2px solid #17211f;
+  border-radius: 8px;
+  box-shadow: 2px 2px 0 #17211f;
+  color: #17211f;
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  font-weight: 950;
+  gap: 3px;
+  justify-items: center;
+  min-height: 72px;
+  padding: 8px 6px;
+  text-align: center;
+}
+
+.dev-route-button svg {
+  color: #346df1;
+  height: 18px;
+  width: 18px;
+}
+
+.dev-route-button small {
+  color: #5d6864;
+  font-size: 0.76rem;
+  font-weight: 900;
+}
+
+.dev-route-button.selected {
+  background: #ffdc2e;
+}
+
+.dev-route-button.selected svg,
+.dev-route-button.selected small {
+  color: #17211f;
+}
+
 .compact-button {
   font-size: 0.88rem;
   min-height: 40px;
@@ -1216,6 +1261,10 @@ textarea {
 
   .dev-dummy-tools {
     grid-template-columns: 1fr;
+  }
+
+  .dev-route-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

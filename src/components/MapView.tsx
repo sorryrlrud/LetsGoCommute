@@ -385,8 +385,8 @@ export function MapView({
     });
 
     checkpoints.forEach((checkpoint, index) => {
-      const isStart = index === 0;
-      const isEnd = index === checkpoints.length - 1;
+      const isStart = checkpoint.type === 'start' || index === 0;
+      const isEnd = checkpoint.type === 'end';
       const tone = isStart ? 'start' : isEnd ? 'end' : 'check';
       const label = isStart ? 'S' : isEnd ? 'G' : `${index}`;
       const segment = getSegmentDisplay(checkpoint, index, checkpoints, segments);
