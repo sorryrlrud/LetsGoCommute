@@ -862,13 +862,19 @@ textarea {
   color: #a91535;
 }
 
+.checkpoint-icon-button.merge-previous {
+  background: #eef5ff;
+  color: #346df1;
+}
+
+.checkpoint-icon-button.merge-next {
+  background: #e9fff6;
+  color: #0f835d;
+}
+
 .checkpoint-icon-button svg {
   height: 17px;
   width: 17px;
-}
-
-.checkpoint-icon-button.merge-next svg {
-  transform: scaleX(-1);
 }
 
 .dialog-structure-actions {
@@ -1091,14 +1097,19 @@ textarea {
   box-shadow: 8px 8px 0 #17211f;
   display: grid;
   gap: 12px;
+  max-height: calc(100vh - 36px);
+  max-height: calc(100dvh - 36px);
   max-width: 420px;
+  overflow-y: auto;
   padding: 24px;
   position: relative;
   width: min(100%, 420px);
 }
 
 .checkpoint-dialog {
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
   max-width: 460px;
+  overflow: hidden;
   width: min(100%, 460px);
 }
 
@@ -1136,6 +1147,12 @@ textarea {
 .prompt-form label {
   color: #17211f;
   font-weight: 900;
+}
+
+.checkpoint-dialog .prompt-form {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
 }
 
 .prompt-segment {

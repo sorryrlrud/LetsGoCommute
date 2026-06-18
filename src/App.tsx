@@ -1,9 +1,10 @@
 import {
   AlertCircle,
+  ArrowDownToLine,
+  ArrowUpToLine,
   Bell,
   BellOff,
   Check,
-  GitMerge,
   GitCompareArrows,
   Home,
   Info,
@@ -2564,7 +2565,7 @@ function App() {
                       title="이전과 병합"
                       type="button"
                     >
-                      <GitMerge aria-hidden="true" />
+                      <ArrowUpToLine aria-hidden="true" />
                     </button>
                   ) : null}
                   {canMergeNext ? (
@@ -2582,7 +2583,7 @@ function App() {
                       title="다음과 병합"
                       type="button"
                     >
-                      <GitMerge aria-hidden="true" />
+                      <ArrowDownToLine aria-hidden="true" />
                     </button>
                   ) : null}
                 </div>
@@ -3239,7 +3240,7 @@ function App() {
                   title="이전과 병합"
                   type="button"
                 >
-                  <GitMerge aria-hidden="true" />
+                  <ArrowUpToLine aria-hidden="true" />
                 </button>
               ) : null}
               {checkpointIndex < editorTrip.checkpoints.length - 1 ? (
@@ -3257,7 +3258,7 @@ function App() {
                   title="다음과 병합"
                   type="button"
                 >
-                  <GitMerge aria-hidden="true" />
+                  <ArrowDownToLine aria-hidden="true" />
                 </button>
               ) : null}
             </div>
