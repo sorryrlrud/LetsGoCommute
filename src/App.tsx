@@ -2384,9 +2384,33 @@ function App() {
           <SegmentSummary checkpoints={currentTrip.checkpoints} segments={currentTrip.segments} />
         </section>
         {renderCheckpointManager(currentTrip, 'current', '체크포인트 관리')}
+        {!validation.valid ? (
+          <section className="validation-box" role="alert">
+            <AlertCircle aria-hidden="true" />
+            <div>
+              <strong>완료 전 확인</strong>
+              <ul>
+                {validation.errors.map((error) => (
+                  <li key={error}>{error}</li>
+                ))}
+              </ul>
+            </div>
+          </section>
+        ) : null}
         <div className="button-row">
           <button
             className="primary-button"
+            disabled={!validation.valid}
+            onClick={() => {
+              void saveCurrentTrip();
+            }}
+            type="button"
+          >
+            <Check aria-hidden="true" />
+            완료
+          </button>
+          <button
+            className="secondary-button"
             onClick={() => {
               setRecordingStatus('editing');
               setShowCheckpointEditor(false);
