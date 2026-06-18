@@ -66,6 +66,8 @@ const GPS_DISTANCE_SAVE_METERS = 8;
 const GPS_TURN_SAVE_DEGREES = 35;
 const GPS_TURN_MIN_LEG_METERS = 5;
 const CHECKPOINT_PLACE_MATCH_RADIUS_METERS = 100;
+const AUTO_CHECKPOINT_RADIUS_METERS = 80;
+const AUTO_CHECKPOINT_MIN_DISTANCE_FROM_LAST_METERS = 120;
 const DRAFT_STALE_PAUSE_MS = 90_000;
 
 type AppView =
@@ -93,6 +95,11 @@ interface ConfirmState {
 }
 
 type CheckpointPromptState = DraftCheckpointPrompt;
+
+interface CheckpointPlaceMatch {
+  place: SavedCheckpointPlace;
+  distanceMeters: number;
+}
 
 interface MapCheckpointEditorState {
   source: 'current' | 'saved';
@@ -209,8 +216,25 @@ function createDefaultDevSimulationState(): DevSimulationState {
 function createDefaultAppSettings(): AppSettings {
   return {
     key: 'appSettings',
+    autoCheckpointEnabled: true,
     pushNotificationsEnabled: false,
     updatedAt: new Date().toISOString(),
+  };
+}
+
+function normalizeAppSettings(settings: AppSettings | null): AppSettings {
+  const defaults = createDefaultAppSettings();
+
+  if (!settings) {
+    return defaults;
+  }
+
+  return {
+    ...defaults,
+    ...settings,
+    autoCheckpointEnabled: settings.autoCheckpointEnabled ?? defaults.autoCheckpointEnabled,
+    pushNotificationsEnabled:
+      settings.pushNotificationsEnabled ?? defaults.pushNotificationsEnabled,
   };
 }
 
@@ -406,6 +430,21 @@ function shouldSaveRoutePoint(trip: TripRecord, point: GpsPoint) {
   );
 
   return turnDegrees >= GPS_TURN_SAVE_DEGREES;
+}
+
+function appendGpsPoint(points: GpsPoint[], point: GpsPoint) {
+  const lastPoint = points.at(-1);
+
+  if (
+    lastPoint &&
+    lastPoint.recordedAt === point.recordedAt &&
+    lastPoint.lat === point.lat &&
+    lastPoint.lng === point.lng
+  ) {
+    return points;
+  }
+
+  return [...points, point];
 }
 
 function positionToPoint(position: GeolocationPosition, recordedAt = new Date().toISOString()) {
@@ -649,13 +688,61 @@ function getSegmentLabel(segment: Segment, checkpoints: Checkpoint[]) {
   return `${from?.name || '출발 체크'} → ${to?.name || '도착 체크'}`;
 }
 
-function findCheckpointPlaceMatch(point: GpsPoint, places: SavedCheckpointPlace[]) {
+function findCheckpointPlaceMatch(
+  point: GpsPoint,
+  places: SavedCheckpointPlace[],
+): CheckpointPlaceMatch | null {
   const candidates = places
     .map((place) => ({
       place,
       distanceMeters: calculateDistanceMeters(point, place),
     }))
     .filter((candidate) => candidate.distanceMeters <= CHECKPOINT_PLACE_MATCH_RADIUS_METERS)
+    .sort((a, b) => a.distanceMeters - b.distanceMeters);
+
+  return candidates[0] ?? null;
+}
+
+function getAutoCheckpointVisitedPlaceIds(
+  trip: TripRecord,
+  places: SavedCheckpointPlace[],
+) {
+  const visitedPlaceIds = new Set<string>();
+
+  for (const checkpoint of trip.checkpoints) {
+    for (const place of places) {
+      if (calculateDistanceMeters(checkpoint, place) <= AUTO_CHECKPOINT_RADIUS_METERS) {
+        visitedPlaceIds.add(place.id);
+      }
+    }
+  }
+
+  return visitedPlaceIds;
+}
+
+function findAutoCheckpointPlaceMatch(
+  point: GpsPoint,
+  places: SavedCheckpointPlace[],
+  trip: TripRecord,
+  visitedPlaceIds: Set<string>,
+): CheckpointPlaceMatch | null {
+  const lastCheckpoint = trip.checkpoints.at(-1);
+
+  const candidates = places
+    .map((place) => ({
+      place,
+      distanceMeters: calculateDistanceMeters(point, place),
+      distanceFromLastCheckpointMeters: lastCheckpoint
+        ? calculateDistanceMeters(lastCheckpoint, place)
+        : Number.POSITIVE_INFINITY,
+    }))
+    .filter(
+      (candidate) =>
+        !visitedPlaceIds.has(candidate.place.id) &&
+        candidate.distanceMeters <= AUTO_CHECKPOINT_RADIUS_METERS &&
+        candidate.distanceFromLastCheckpointMeters >=
+          AUTO_CHECKPOINT_MIN_DISTANCE_FROM_LAST_METERS,
+    )
     .sort((a, b) => a.distanceMeters - b.distanceMeters);
 
   return candidates[0] ?? null;
@@ -779,6 +866,8 @@ function App() {
   const showCheckpointEditorRef = useRef(showCheckpointEditor);
   const lastSavedPointAtRef = useRef<number>(0);
   const draftPersistTimerRef = useRef<number | null>(null);
+  const autoCheckpointVisitedPlaceIdsRef = useRef<Set<string>>(new Set());
+  const autoCheckpointSavingRef = useRef(false);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
 
   const selectedTrip = useMemo(
@@ -798,6 +887,18 @@ function App() {
   useEffect(() => {
     checkpointPlacesRef.current = checkpointPlaces;
   }, [checkpointPlaces]);
+
+  useEffect(() => {
+    if (!currentTrip || !isDraftRecordingStatus(recordingStatus)) {
+      autoCheckpointVisitedPlaceIdsRef.current = new Set();
+      return;
+    }
+
+    autoCheckpointVisitedPlaceIdsRef.current = getAutoCheckpointVisitedPlaceIds(
+      currentTrip,
+      checkpointPlaces,
+    );
+  }, [checkpointPlaces, currentTrip, recordingStatus]);
 
   useEffect(() => {
     appSettingsRef.current = appSettings;
@@ -961,25 +1062,8 @@ function App() {
         setGpsStatus(gpsStatusFromPoint(point));
         setNow(new Date(point.recordedAt).getTime());
 
-        const activeTrip = currentTripRef.current;
-        if (recordingStatusRef.current !== 'recording' || !activeTrip) {
-          return;
-        }
-
-        if (!shouldSaveRoutePoint(activeTrip, point)) {
-          return;
-        }
-
-        lastSavedPointAtRef.current = new Date(point.recordedAt).getTime();
-        setCurrentTrip((trip) =>
-          trip
-            ? {
-                ...trip,
-                points: [...trip.points, point],
-                updatedAt: point.recordedAt,
-              }
-            : trip,
-        );
+        appendRoutePointIfRecording(point);
+        void tryAutoCheckpointFromPosition(point);
       },
       (error) => {
         if (devSimulationRef.current.enabled) {
@@ -996,6 +1080,8 @@ function App() {
     );
 
     return () => navigator.geolocation.clearWatch(watchId);
+    // GPS watch is registered once and reads live recording state from refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function loadTrips() {
@@ -1021,7 +1107,7 @@ function App() {
       setStorageError(null);
       const storedSettings = await storageAdapter.getAppSettings();
       const permission = getInitialNotificationPermission();
-      const nextSettings = storedSettings ?? createDefaultAppSettings();
+      const nextSettings = normalizeAppSettings(storedSettings);
       const effectiveSettings =
         nextSettings.pushNotificationsEnabled && permission !== 'granted'
           ? {
@@ -1094,7 +1180,7 @@ function App() {
 
     const updatedTrip = {
       ...activeTrip,
-      points: [...activeTrip.points, point],
+      points: appendGpsPoint(activeTrip.points, point),
       updatedAt: point.recordedAt,
     };
 
@@ -1140,6 +1226,21 @@ function App() {
     await storageAdapter.saveAppSettings(nextSettings);
     setAppSettings(nextSettings);
     appSettingsRef.current = nextSettings;
+  }
+
+  async function setAutoCheckpointEnabled(enabled: boolean) {
+    const nextSettings: AppSettings = {
+      ...appSettingsRef.current,
+      autoCheckpointEnabled: enabled,
+      updatedAt: new Date().toISOString(),
+    };
+
+    try {
+      await saveAppSettings(nextSettings);
+      showNotice(enabled ? '체크포인트 자동저장을 켰습니다.' : '체크포인트 자동저장을 껐습니다.');
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : '자동저장 설정 저장에 실패했습니다.');
+    }
   }
 
   async function setPushNotificationsEnabled(enabled: boolean) {
@@ -1193,7 +1294,10 @@ function App() {
     }
   }
 
-  async function showCheckpointNotification(checkpoint: Checkpoint) {
+  async function showCheckpointNotification(
+    checkpoint: Checkpoint,
+    source: 'manual' | 'auto' = 'manual',
+  ) {
     if (!appSettingsRef.current.pushNotificationsEnabled) {
       return;
     }
@@ -1202,8 +1306,12 @@ function App() {
       return;
     }
 
-    const title = '체크포인트 저장 완료';
-    const body = `${checkpoint.name || '체크포인트'} · ${formatTime(checkpoint.recordedAt)}`;
+    const title =
+      source === 'auto' ? '체크포인트 자동 저장 완료' : '체크포인트 저장 완료';
+    const body =
+      source === 'auto'
+        ? `${checkpoint.name || '체크포인트'} 지점을 지나 자동 저장했습니다.`
+        : `${checkpoint.name || '체크포인트'} · ${formatTime(checkpoint.recordedAt)}`;
     const icon = `${import.meta.env.BASE_URL}icons/icon.svg`;
     const options: NotificationOptions = {
       body,
@@ -1451,10 +1559,11 @@ function App() {
   }
 
   function confirmCheckpoint() {
-    void addCheckpoint();
+    void addManualCheckpoint();
   }
 
-  async function addCheckpoint() {
+  async function addManualCheckpoint() {
+    checkpointPromptRef.current = null;
     setCheckpointPrompt(null);
 
     if (!currentTripRef.current) {
@@ -1463,67 +1572,124 @@ function App() {
 
     try {
       const point = await requestFreshPosition();
-      const activeTrip = currentTripRef.current;
-
-      if (!activeTrip) {
-        return;
-      }
-
-      const previousCheckpoint = activeTrip.checkpoints.at(-1);
-
-      if (!previousCheckpoint) {
-        return;
-      }
-
-      const matchedPlace = findCheckpointPlaceMatch(point, checkpointPlacesRef.current);
-      const checkpoint = createCheckpoint(
-        point,
-        activeTrip.checkpoints.length,
-        matchedPlace?.place.type ?? null,
-        matchedPlace?.place.name ?? `체크포인트 ${activeTrip.checkpoints.length + 1}`,
-      );
-      const segment = createSegmentFromCheckpoints(previousCheckpoint, checkpoint);
-      const prompt: CheckpointPromptState = {
-        checkpointId: checkpoint.id,
-        segmentId: segment.id,
-        name: checkpoint.name,
-        type: checkpoint.type,
-        transportMode: segment.transportMode,
-        savePlace: true,
-        matchedPlaceId: matchedPlace?.place.id ?? null,
-        matchedPlaceDistanceMeters: matchedPlace?.distanceMeters ?? null,
-      };
-      const updatedTrip: TripRecord = {
-        ...activeTrip,
-        points: [...activeTrip.points, point],
-        checkpoints: [...activeTrip.checkpoints, checkpoint],
-        segments: [...activeTrip.segments, segment],
-        updatedAt: point.recordedAt,
-      };
-
-      setCurrentTrip((trip) => {
-        if (!trip || trip.id !== activeTrip.id) {
-          return trip;
-        }
-
-        return updatedTrip;
-      });
-      currentTripRef.current = updatedTrip;
-      setCheckpointPrompt(prompt);
-      lastSavedPointAtRef.current = new Date(point.recordedAt).getTime();
-      try {
-        await saveActiveTripDraftImmediately(updatedTrip, prompt);
-        showNotice('체크포인트 자동 저장 완료! 방금 구간을 바로 정리할 수 있습니다.');
-      } catch (error) {
-        showNotice(
-          error instanceof Error
-            ? `체크포인트 기록됨, 임시 저장 실패: ${error.message}`
-            : '체크포인트 기록됨, 임시 저장에 실패했습니다.',
-        );
-      }
-      void showCheckpointNotification(checkpoint);
+      await saveCheckpointAtPoint(point, 'manual');
     } catch (error) {
       showNotice(error instanceof Error ? error.message : '체크포인트 위치를 확인하지 못했습니다.');
+    }
+  }
+
+  async function saveCheckpointAtPoint(
+    point: GpsPoint,
+    source: 'manual' | 'auto',
+    matchedPlace: CheckpointPlaceMatch | null = null,
+  ) {
+    const activeTrip = currentTripRef.current;
+
+    if (recordingStatusRef.current !== 'recording' || !activeTrip) {
+      return false;
+    }
+
+    const previousCheckpoint = activeTrip.checkpoints.at(-1);
+
+    if (!previousCheckpoint) {
+      return false;
+    }
+
+    const placeMatch = matchedPlace ?? findCheckpointPlaceMatch(point, checkpointPlacesRef.current);
+    const checkpoint = createCheckpoint(
+      point,
+      activeTrip.checkpoints.length,
+      placeMatch?.place.type ?? null,
+      placeMatch?.place.name ?? `체크포인트 ${activeTrip.checkpoints.length + 1}`,
+    );
+    const segment = createSegmentFromCheckpoints(previousCheckpoint, checkpoint);
+    const prompt: CheckpointPromptState = {
+      checkpointId: checkpoint.id,
+      segmentId: segment.id,
+      name: checkpoint.name,
+      type: checkpoint.type,
+      transportMode: segment.transportMode,
+      savePlace: true,
+      matchedPlaceId: placeMatch?.place.id ?? null,
+      matchedPlaceDistanceMeters: placeMatch?.distanceMeters ?? null,
+    };
+    const updatedTrip: TripRecord = {
+      ...activeTrip,
+      points: appendGpsPoint(activeTrip.points, point),
+      checkpoints: [...activeTrip.checkpoints, checkpoint],
+      segments: [...activeTrip.segments, segment],
+      updatedAt: point.recordedAt,
+    };
+
+    setCurrentTrip((trip) => {
+      if (!trip || trip.id !== activeTrip.id) {
+        return trip;
+      }
+
+      return updatedTrip;
+    });
+    currentTripRef.current = updatedTrip;
+    checkpointPromptRef.current = prompt;
+    setCheckpointPrompt(prompt);
+    lastSavedPointAtRef.current = new Date(point.recordedAt).getTime();
+
+    try {
+      await saveActiveTripDraftImmediately(updatedTrip, prompt);
+      showNotice(
+        source === 'auto'
+          ? `${checkpoint.name || '체크포인트'} 자동 저장 완료!`
+          : '체크포인트 자동 저장 완료! 방금 구간을 바로 정리할 수 있습니다.',
+      );
+      void showCheckpointNotification(checkpoint, source);
+    } catch (error) {
+      showNotice(
+        error instanceof Error
+          ? `체크포인트 기록됨, 임시 저장 실패: ${error.message}`
+          : '체크포인트 기록됨, 임시 저장에 실패했습니다.',
+      );
+    }
+
+    return true;
+  }
+
+  async function tryAutoCheckpointFromPosition(point: GpsPoint) {
+    if (
+      !appSettingsRef.current.autoCheckpointEnabled ||
+      autoCheckpointSavingRef.current ||
+      recordingStatusRef.current !== 'recording' ||
+      checkpointPromptRef.current
+    ) {
+      return;
+    }
+
+    const activeTrip = currentTripRef.current;
+
+    if (!activeTrip) {
+      return;
+    }
+
+    const match = findAutoCheckpointPlaceMatch(
+      point,
+      checkpointPlacesRef.current,
+      activeTrip,
+      autoCheckpointVisitedPlaceIdsRef.current,
+    );
+
+    if (!match) {
+      return;
+    }
+
+    autoCheckpointSavingRef.current = true;
+    autoCheckpointVisitedPlaceIdsRef.current.add(match.place.id);
+
+    try {
+      const recorded = await saveCheckpointAtPoint(point, 'auto', match);
+
+      if (!recorded) {
+        autoCheckpointVisitedPlaceIdsRef.current.delete(match.place.id);
+      }
+    } finally {
+      autoCheckpointSavingRef.current = false;
     }
   }
 
@@ -2060,8 +2226,10 @@ function App() {
   ) {
     const point = createDevSimulationPoint(state);
     syncCurrentPosition(point, 'dev');
+    const appended = mode === 'append-route' ? appendRoutePointIfRecording(point) : false;
+    void tryAutoCheckpointFromPosition(point);
 
-    return mode === 'append-route' ? appendRoutePointIfRecording(point) : false;
+    return appended;
   }
 
   function setDevSimulationEnabled(enabled: boolean) {
@@ -2987,7 +3155,21 @@ function App() {
           <Metric label="알림 권한" value={getNotificationPermissionLabel(notificationPermission)} />
         </section>
         <section className="panel settings-panel">
-          <h2>푸시 알림</h2>
+          <h2>체크포인트 자동저장과 알림</h2>
+          <label className="setting-toggle">
+            <input
+              checked={appSettings.autoCheckpointEnabled}
+              onChange={(event) => {
+                void setAutoCheckpointEnabled(event.target.checked);
+              }}
+              type="checkbox"
+            />
+            <span>
+              <Save aria-hidden="true" />
+              <strong>체크포인트 자동저장</strong>
+              <small>저장한 장소 80m 안에 들어오면 체크포인트를 저장합니다.</small>
+            </span>
+          </label>
           <label className="setting-toggle">
             <input
               checked={appSettings.pushNotificationsEnabled}

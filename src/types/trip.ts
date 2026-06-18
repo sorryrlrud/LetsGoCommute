@@ -131,6 +131,7 @@ export interface ActiveTripDraft {
 
 export interface AppSettings {
   key: 'appSettings';
+  autoCheckpointEnabled: boolean;
   pushNotificationsEnabled: boolean;
   updatedAt: string;
 }
