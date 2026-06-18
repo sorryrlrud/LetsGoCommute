@@ -804,7 +804,11 @@ textarea {
 }
 
 .checkpoint-edit-row {
+  align-items: center;
   border-bottom: 1px solid #dce4e1;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   padding-bottom: 12px;
 }
 
@@ -816,24 +820,50 @@ textarea {
 .checkpoint-edit-body {
   display: grid;
   gap: 10px;
+  min-width: 0;
 }
 
-.checkpoint-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+.checkpoint-action-column {
+  align-items: center;
+  display: grid;
+  gap: 6px;
+  grid-auto-columns: 36px;
+  grid-auto-flow: column;
+  justify-content: end;
 }
 
-.compact-button {
+.checkpoint-icon-button {
+  align-items: center;
+  background: #ffffff;
+  border: 2px solid #17211f;
+  border-radius: 8px;
   box-shadow: 2px 2px 0 #17211f;
-  font-size: 0.84rem;
-  min-height: 36px;
-  padding: 0 10px;
-  width: auto;
+  color: #17211f;
+  cursor: pointer;
+  display: inline-flex;
+  height: 36px;
+  justify-content: center;
+  padding: 0;
+  width: 36px;
+}
+
+.checkpoint-icon-button.danger {
+  background: #fff1f4;
+  color: #a91535;
+}
+
+.checkpoint-icon-button svg {
+  height: 17px;
+  width: 17px;
+}
+
+.checkpoint-icon-button.merge-next svg {
+  transform: scaleX(-1);
 }
 
 .dialog-structure-actions {
   border-top: 1px solid #dce4e1;
+  justify-content: start;
   padding-top: 12px;
 }
 
@@ -1096,10 +1126,6 @@ textarea {
   .finish-button,
   .start-button {
     width: 100%;
-  }
-
-  .checkpoint-actions .compact-button {
-    width: auto;
   }
 
   .bottom-controls {

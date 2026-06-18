@@ -2038,71 +2038,75 @@ function App() {
                     </span>
                     {checkpoint.memo ? <p>{checkpoint.memo}</p> : null}
                   </div>
-                  <div className="checkpoint-actions">
+                </div>
+                <div className="checkpoint-action-column">
+                  <button
+                    aria-label="체크포인트 편집"
+                    className="checkpoint-icon-button"
+                    onClick={() =>
+                      source === 'current'
+                        ? openCurrentMapCheckpointEditor(checkpoint.id)
+                        : openSelectedMapCheckpointEditor(checkpoint.id)
+                    }
+                    title="편집"
+                    type="button"
+                  >
+                    <Pencil aria-hidden="true" />
+                  </button>
+                  {!isFixedEndpoint ? (
                     <button
-                      className="secondary-button compact-button"
+                      aria-label="체크포인트 삭제"
+                      className="checkpoint-icon-button danger"
                       onClick={() =>
-                        source === 'current'
-                          ? openCurrentMapCheckpointEditor(checkpoint.id)
-                          : openSelectedMapCheckpointEditor(checkpoint.id)
+                        confirmCheckpointStructureEdit(
+                          source,
+                          trip.id,
+                          checkpoint.id,
+                          'delete',
+                        )
                       }
+                      title="삭제"
                       type="button"
                     >
-                      <Pencil aria-hidden="true" />
-                      편집
+                      <Trash2 aria-hidden="true" />
                     </button>
-                    {!isFixedEndpoint ? (
-                      <button
-                        className="danger-button subtle compact-button"
-                        onClick={() =>
-                          confirmCheckpointStructureEdit(
-                            source,
-                            trip.id,
-                            checkpoint.id,
-                            'delete',
-                          )
-                        }
-                        type="button"
-                      >
-                        <Trash2 aria-hidden="true" />
-                        삭제
-                      </button>
-                    ) : null}
-                    {canMergePrevious ? (
-                      <button
-                        className="secondary-button compact-button"
-                        onClick={() =>
-                          confirmCheckpointStructureEdit(
-                            source,
-                            trip.id,
-                            checkpoint.id,
-                            'merge-previous',
-                          )
-                        }
-                        type="button"
-                      >
-                        <GitMerge aria-hidden="true" />
-                        이전과 병합
-                      </button>
-                    ) : null}
-                    {canMergeNext ? (
-                      <button
-                        className="secondary-button compact-button"
-                        onClick={() =>
-                          confirmCheckpointStructureEdit(
-                            source,
-                            trip.id,
-                            checkpoint.id,
-                            'merge-next',
-                          )
-                        }
-                        type="button"
-                      >
-                        <GitMerge aria-hidden="true" />
-                        다음과 병합
-                      </button>
-                    ) : null}
-                  </div>
+                  ) : null}
+                  {canMergePrevious ? (
+                    <button
+                      aria-label="이전 체크포인트와 병합"
+                      className="checkpoint-icon-button merge-previous"
+                      onClick={() =>
+                        confirmCheckpointStructureEdit(
+                          source,
+                          trip.id,
+                          checkpoint.id,
+                          'merge-previous',
+                        )
+                      }
+                      title="이전과 병합"
+                      type="button"
+                    >
+                      <GitMerge aria-hidden="true" />
+                    </button>
+                  ) : null}
+                  {canMergeNext ? (
+                    <button
+                      aria-label="다음 체크포인트와 병합"
+                      className="checkpoint-icon-button merge-next"
+                      onClick={() =>
+                        confirmCheckpointStructureEdit(
+                          source,
+                          trip.id,
+                          checkpoint.id,
+                          'merge-next',
+                        )
+                      }
+                      title="다음과 병합"
+                      type="button"
+                    >
+                      <GitMerge aria-hidden="true" />
+                    </button>
+                  ) : null}
                 </div>
               </li>
             );
@@ -2600,9 +2604,10 @@ function App() {
             ) : null}
           </div>
           {canEditStructure ? (
-            <div className="checkpoint-actions dialog-structure-actions">
+            <div className="checkpoint-action-column dialog-structure-actions">
               <button
-                className="danger-button subtle compact-button"
+                aria-label="체크포인트 삭제"
+                className="checkpoint-icon-button danger"
                 onClick={() =>
                   confirmCheckpointStructureEdit(
                     mapCheckpointEditor.source,
@@ -2611,14 +2616,15 @@ function App() {
                     'delete',
                   )
                 }
+                title="삭제"
                 type="button"
               >
                 <Trash2 aria-hidden="true" />
-                삭제
               </button>
               {checkpointIndex > 0 ? (
                 <button
-                  className="secondary-button compact-button"
+                  aria-label="이전 체크포인트와 병합"
+                  className="checkpoint-icon-button merge-previous"
                   onClick={() =>
                     confirmCheckpointStructureEdit(
                       mapCheckpointEditor.source,
@@ -2627,15 +2633,16 @@ function App() {
                       'merge-previous',
                     )
                   }
+                  title="이전과 병합"
                   type="button"
                 >
                   <GitMerge aria-hidden="true" />
-                  이전과 병합
                 </button>
               ) : null}
               {checkpointIndex < editorTrip.checkpoints.length - 1 ? (
                 <button
-                  className="secondary-button compact-button"
+                  aria-label="다음 체크포인트와 병합"
+                  className="checkpoint-icon-button merge-next"
                   onClick={() =>
                     confirmCheckpointStructureEdit(
                       mapCheckpointEditor.source,
@@ -2644,10 +2651,10 @@ function App() {
                       'merge-next',
                     )
                   }
+                  title="다음과 병합"
                   type="button"
                 >
                   <GitMerge aria-hidden="true" />
-                  다음과 병합
                 </button>
               ) : null}
             </div>
