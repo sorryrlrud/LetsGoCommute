@@ -71,6 +71,8 @@ const START_PLACE_PROMPT_RADIUS_METERS = 100;
 const AUTO_CHECKPOINT_RADIUS_METERS = 80;
 const AUTO_CHECKPOINT_MIN_DISTANCE_FROM_LAST_METERS = 120;
 const DRAFT_STALE_PAUSE_MS = 90_000;
+const ACTION_POSITION_MAX_AGE_MS = 12_000;
+const DRAFT_PERSIST_DEBOUNCE_MS = 600;
 const DEV_ROUTE_POINT_MATCH_EPSILON = 0.00001;
 
 type AppView =
@@ -158,6 +160,7 @@ const checkpointTypeOptions = Object.keys(checkpointTypeLabels) as Exclude<
 const DEV_DUMMY_MAX_COUNT = 8;
 
 type PlaceSaveAction = 'start' | 'end' | 'checkpoint';
+type RecordingActionPending = 'checkpoint' | 'finish' | null;
 
 const DEV_ROUTE_POINTS: DevRoutePoint[] = [
   {
@@ -938,6 +941,9 @@ function App() {
   const [mapCheckpointEditor, setMapCheckpointEditor] =
     useState<MapCheckpointEditorState | null>(null);
   const [savedPlaceDraft, setSavedPlaceDraft] = useState<SavedPlaceDraftState | null>(null);
+  const [recordingActionPending, setRecordingActionPending] =
+    useState<RecordingActionPending>(null);
+  const [tripSavePending, setTripSavePending] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [storageError, setStorageError] = useState<string | null>(null);
   const [draftHydrated, setDraftHydrated] = useState(false);
@@ -947,6 +953,7 @@ function App() {
   );
 
   const currentTripRef = useRef<TripRecord | null>(currentTrip);
+  const currentPositionRef = useRef<GpsPoint | null>(currentPosition);
   const checkpointPlacesRef = useRef<SavedCheckpointPlace[]>(checkpointPlaces);
   const appSettingsRef = useRef<AppSettings>(appSettings);
   const checkpointPromptRef = useRef<CheckpointPromptState | null>(checkpointPrompt);
@@ -956,6 +963,9 @@ function App() {
   const showCheckpointEditorRef = useRef(showCheckpointEditor);
   const lastSavedPointAtRef = useRef<number>(0);
   const draftPersistTimerRef = useRef<number | null>(null);
+  const pendingActiveTripDraftRef = useRef<ActiveTripDraft | null>(null);
+  const draftPersistInFlightRef = useRef(false);
+  const draftPersistRunRef = useRef<Promise<void> | null>(null);
   const autoStartPromptedPlaceIdRef = useRef<string | null>(null);
   const autoCheckpointVisitedPlaceIdsRef = useRef<Set<string>>(new Set());
   const autoCheckpointSavingRef = useRef(false);
@@ -974,6 +984,10 @@ function App() {
   useEffect(() => {
     currentTripRef.current = currentTrip;
   }, [currentTrip]);
+
+  useEffect(() => {
+    currentPositionRef.current = currentPosition;
+  }, [currentPosition]);
 
   useEffect(() => {
     checkpointPlacesRef.current = checkpointPlaces;
@@ -1036,11 +1050,11 @@ function App() {
 
     if (draftPersistTimerRef.current !== null) {
       window.clearTimeout(draftPersistTimerRef.current);
+      draftPersistTimerRef.current = null;
     }
 
     if (!currentTrip || !isDraftRecordingStatus(recordingStatus)) {
-      draftPersistTimerRef.current = null;
-      void storageAdapter.clearActiveTripDraft().catch((error) => {
+      void clearActiveTripDraftSafely().catch((error) => {
         setStorageError(error instanceof Error ? error.message : '임시 기록 삭제에 실패했습니다.');
       });
       return;
@@ -1054,12 +1068,7 @@ function App() {
       showCheckpointEditor,
     );
 
-    draftPersistTimerRef.current = window.setTimeout(() => {
-      void storageAdapter.saveActiveTripDraft(draft).catch((error) => {
-        setStorageError(error instanceof Error ? error.message : '임시 기록 저장에 실패했습니다.');
-      });
-      draftPersistTimerRef.current = null;
-    }, 250);
+    scheduleActiveTripDraftPersist(draft);
 
     return () => {
       if (draftPersistTimerRef.current !== null) {
@@ -1067,6 +1076,8 @@ function App() {
         draftPersistTimerRef.current = null;
       }
     };
+    // Draft persistence helpers are ref-backed queue operations; dependencies here are the draft inputs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     activePauseStartedAt,
     checkpointPrompt,
@@ -1263,6 +1274,12 @@ function App() {
 
   function requestConfirmation(state: ConfirmState) {
     setConfirmState(state);
+  }
+
+  function waitForNextFrame() {
+    return new Promise<void>((resolve) => {
+      window.requestAnimationFrame(() => resolve());
+    });
   }
 
   function getCurrentTimestampMs() {
@@ -1483,25 +1500,69 @@ function App() {
     };
   }
 
-  async function saveActiveTripDraftImmediately(
-    trip: TripRecord,
-    prompt: CheckpointPromptState | null,
-  ) {
-    const status = recordingStatusRef.current;
+  function cancelScheduledActiveTripDraftPersist() {
+    if (draftPersistTimerRef.current !== null) {
+      window.clearTimeout(draftPersistTimerRef.current);
+      draftPersistTimerRef.current = null;
+    }
+  }
 
-    if (!isDraftRecordingStatus(status)) {
+  function reportActiveTripDraftPersistError(error: unknown) {
+    setStorageError(error instanceof Error ? error.message : '임시 기록 저장에 실패했습니다.');
+  }
+
+  function scheduleActiveTripDraftPersist(draft: ActiveTripDraft) {
+    pendingActiveTripDraftRef.current = draft;
+    cancelScheduledActiveTripDraftPersist();
+
+    draftPersistTimerRef.current = window.setTimeout(() => {
+      draftPersistTimerRef.current = null;
+      void flushPendingActiveTripDraft();
+    }, DRAFT_PERSIST_DEBOUNCE_MS);
+  }
+
+  async function flushPendingActiveTripDraft() {
+    if (draftPersistInFlightRef.current) {
       return;
     }
 
-    await storageAdapter.saveActiveTripDraft(
-      createActiveTripDraft(
-        trip,
-        status,
-        activePauseStartedAtRef.current,
-        prompt,
-        showCheckpointEditorRef.current,
-      ),
-    );
+    const draft = pendingActiveTripDraftRef.current;
+    if (!draft) {
+      return;
+    }
+
+    pendingActiveTripDraftRef.current = null;
+    draftPersistInFlightRef.current = true;
+
+    const persistRun = storageAdapter
+      .saveActiveTripDraft(draft)
+      .catch((error: unknown) => {
+        reportActiveTripDraftPersistError(error);
+      })
+      .finally(() => {
+        draftPersistInFlightRef.current = false;
+        if (draftPersistRunRef.current === persistRun) {
+          draftPersistRunRef.current = null;
+        }
+      });
+
+    draftPersistRunRef.current = persistRun;
+    await persistRun;
+
+    if (pendingActiveTripDraftRef.current) {
+      scheduleActiveTripDraftPersist(pendingActiveTripDraftRef.current);
+    }
+  }
+
+  async function clearActiveTripDraftSafely() {
+    cancelScheduledActiveTripDraftPersist();
+    pendingActiveTripDraftRef.current = null;
+
+    if (draftPersistRunRef.current) {
+      await draftPersistRunRef.current.catch(() => undefined);
+    }
+
+    await storageAdapter.clearActiveTripDraft();
   }
 
   async function restoreActiveTripDraft() {
@@ -1670,6 +1731,45 @@ function App() {
     });
   }
 
+  function getRecentCurrentPositionForAction() {
+    if (devSimulationRef.current.enabled) {
+      try {
+        return createDevSimulationPoint(devSimulationRef.current);
+      } catch {
+        return null;
+      }
+    }
+
+    const point = currentPositionRef.current;
+    if (!point) {
+      return null;
+    }
+
+    const pointTime = new Date(point.recordedAt).getTime();
+    const nowMs = getCurrentTimestampMs();
+    const ageMs = nowMs - pointTime;
+
+    if (!Number.isFinite(pointTime) || ageMs < 0 || ageMs > ACTION_POSITION_MAX_AGE_MS) {
+      return null;
+    }
+
+    return {
+      ...point,
+      recordedAt: new Date(nowMs).toISOString(),
+    };
+  }
+
+  async function getRecordingActionPosition() {
+    const recentPoint = getRecentCurrentPositionForAction();
+
+    if (recentPoint) {
+      syncCurrentPosition(recentPoint, devSimulationRef.current.enabled ? 'dev' : 'gps');
+      return recentPoint;
+    }
+
+    return requestFreshPosition();
+  }
+
   function confirmStart() {
     if (currentTrip && isDraftRecordingStatus(recordingStatus)) {
       setView(getDraftView(recordingStatus));
@@ -1694,7 +1794,7 @@ function App() {
     setConfirmState(null);
 
     try {
-      const point = options.startPoint ?? (await requestFreshPosition());
+      const point = options.startPoint ?? (await getRecordingActionPosition());
       const matchedStartPlace =
         options.startPlace ??
         findStartPlacePromptMatch(point, checkpointPlacesRef.current)?.place ??
@@ -1718,6 +1818,10 @@ function App() {
   }
 
   function confirmCheckpoint() {
+    if (recordingActionPending) {
+      return;
+    }
+
     void addManualCheckpoint();
   }
 
@@ -1725,15 +1829,19 @@ function App() {
     checkpointPromptRef.current = null;
     setCheckpointPrompt(null);
 
-    if (!currentTripRef.current) {
+    if (!currentTripRef.current || recordingActionPending) {
       return;
     }
 
+    setRecordingActionPending('checkpoint');
+
     try {
-      const point = await requestFreshPosition();
+      const point = await getRecordingActionPosition();
       await saveCheckpointAtPoint(point, 'manual');
     } catch (error) {
       showNotice(error instanceof Error ? error.message : '체크포인트 위치를 확인하지 못했습니다.');
+    } finally {
+      setRecordingActionPending(null);
     }
   }
 
@@ -1792,21 +1900,21 @@ function App() {
     setCheckpointPrompt(prompt);
     lastSavedPointAtRef.current = new Date(point.recordedAt).getTime();
 
-    try {
-      await saveActiveTripDraftImmediately(updatedTrip, prompt);
-      showNotice(
-        source === 'auto'
-          ? `${checkpoint.name || '체크포인트'} 자동 저장 완료!`
-          : '체크포인트 저장 완료! 방금 구간을 바로 정리할 수 있습니다.',
-      );
-      void showCheckpointNotification(checkpoint, source);
-    } catch (error) {
-      showNotice(
-        error instanceof Error
-          ? `체크포인트 기록됨, 임시 저장 실패: ${error.message}`
-          : '체크포인트 기록됨, 임시 저장에 실패했습니다.',
-      );
-    }
+    scheduleActiveTripDraftPersist(
+      createActiveTripDraft(
+        updatedTrip,
+        'recording',
+        activePauseStartedAtRef.current,
+        prompt,
+        showCheckpointEditorRef.current,
+      ),
+    );
+    showNotice(
+      source === 'auto'
+        ? `${checkpoint.name || '체크포인트'} 자동 저장 완료!`
+        : '체크포인트 저장 완료! 방금 구간을 바로 정리할 수 있습니다.',
+    );
+    void showCheckpointNotification(checkpoint, source);
 
     return true;
   }
@@ -1997,6 +2105,10 @@ function App() {
   }
 
   function confirmFinish() {
+    if (recordingActionPending) {
+      return;
+    }
+
     requestConfirmation({
       title: '도착 처리할까요?',
       description: '기록이 종료되고 요약 화면으로 이동합니다.',
@@ -2008,15 +2120,21 @@ function App() {
   }
 
   async function finishRecording() {
+    if (recordingActionPending) {
+      return;
+    }
+
     setConfirmState(null);
+    setRecordingActionPending('finish');
 
     const trip = currentTripRef.current;
     if (!trip) {
+      setRecordingActionPending(null);
       return;
     }
 
     try {
-      const freshPoint = await requestFreshPosition().catch(() => null);
+      const freshPoint = await getRecordingActionPosition().catch(() => null);
       const endedAt = getCurrentIso();
       const point = freshPoint
         ? { ...freshPoint, recordedAt: endedAt }
@@ -2065,6 +2183,8 @@ function App() {
       showNotice('도착! 요약을 확인해주세요.');
     } catch (error) {
       showNotice(error instanceof Error ? error.message : '기록 종료 중 문제가 발생했습니다.');
+    } finally {
+      setRecordingActionPending(null);
     }
   }
 
@@ -2075,7 +2195,7 @@ function App() {
       confirmLabel: '삭제',
       tone: 'danger',
       onConfirm: () => {
-        void storageAdapter.clearActiveTripDraft().catch((error) => {
+        void clearActiveTripDraftSafely().catch((error) => {
           setStorageError(error instanceof Error ? error.message : '임시 기록 삭제에 실패했습니다.');
         });
         setConfirmState(null);
@@ -2252,10 +2372,17 @@ function App() {
         editor?.checkpointId === checkpointId ? null : editor,
       );
 
-      try {
-        await saveActiveTripDraftImmediately(updatedTrip, nextPrompt);
-      } catch (error) {
-        setStorageError(error instanceof Error ? error.message : '임시 기록 저장에 실패했습니다.');
+      const status = recordingStatusRef.current;
+      if (isDraftRecordingStatus(status)) {
+        scheduleActiveTripDraftPersist(
+          createActiveTripDraft(
+            updatedTrip,
+            status,
+            activePauseStartedAtRef.current,
+            nextPrompt,
+            showCheckpointEditorRef.current,
+          ),
+        );
       }
 
       showNotice(
@@ -2285,7 +2412,7 @@ function App() {
   }
 
   async function saveCurrentTrip() {
-    if (!currentTrip) {
+    if (!currentTrip || tripSavePending) {
       return;
     }
 
@@ -2300,9 +2427,12 @@ function App() {
       updatedAt: new Date().toISOString(),
     };
 
+    setTripSavePending(true);
+
     try {
+      await waitForNextFrame();
       await storageAdapter.saveTrip(tripToSave);
-      await storageAdapter.clearActiveTripDraft();
+      await clearActiveTripDraftSafely();
       await loadTrips();
       setCurrentTrip(tripToSave);
       setSelectedTripId(tripToSave.id);
@@ -2314,6 +2444,8 @@ function App() {
       showNotice('구간 기록 저장 완료!');
     } catch (error) {
       showNotice(error instanceof Error ? error.message : 'IndexedDB 저장에 실패했습니다.');
+    } finally {
+      setTripSavePending(false);
     }
   }
 
@@ -2372,7 +2504,7 @@ function App() {
     try {
       await storageAdapter.clearAllTrips();
       await storageAdapter.clearCheckpointPlaces();
-      await storageAdapter.clearActiveTripDraft();
+      await clearActiveTripDraftSafely();
       setTrips([]);
       setCheckpointPlaces([]);
       setSelectedTripId(null);
@@ -2787,6 +2919,8 @@ function App() {
       return renderMissingTrip();
     }
 
+    const isRecordingActionPending = recordingActionPending !== null;
+
     return (
       <section className="recording-screen">
         <div className={`recording-banner ${recordingStatus}`}>
@@ -2808,25 +2942,45 @@ function App() {
         {renderDevMapPanel()}
         <div className={`bottom-controls ${recordingStatus === 'paused' ? 'paused' : ''}`}>
           {recordingStatus === 'paused' ? (
-            <button className="primary-button" onClick={resumeRecording} type="button">
+            <button
+              className="primary-button"
+              disabled={isRecordingActionPending}
+              onClick={resumeRecording}
+              type="button"
+            >
               <RotateCcw aria-hidden="true" />
               재개
             </button>
           ) : (
             <>
-              <button className="primary-button" onClick={confirmCheckpoint} type="button">
+              <button
+                className="primary-button"
+                disabled={isRecordingActionPending}
+                onClick={confirmCheckpoint}
+                type="button"
+              >
                 <Check aria-hidden="true" />
-                체크!
+                {recordingActionPending === 'checkpoint' ? '체크 중...' : '체크!'}
               </button>
-              <button className="secondary-button" onClick={confirmPause} type="button">
+              <button
+                className="secondary-button"
+                disabled={isRecordingActionPending}
+                onClick={confirmPause}
+                type="button"
+              >
                 <Pause aria-hidden="true" />
                 일시정지
               </button>
             </>
           )}
-          <button className="finish-button" onClick={confirmFinish} type="button">
+          <button
+            className="finish-button"
+            disabled={isRecordingActionPending}
+            onClick={confirmFinish}
+            type="button"
+          >
             <Square aria-hidden="true" />
-            도착!
+            {recordingActionPending === 'finish' ? '도착 처리 중...' : '도착!'}
           </button>
         </div>
         <TimerDisplay
@@ -2886,14 +3040,14 @@ function App() {
         <div className="button-row">
           <button
             className="primary-button"
-            disabled={!validation.valid}
+            disabled={!validation.valid || tripSavePending}
             onClick={() => {
               void saveCurrentTrip();
             }}
             type="button"
           >
             <Check aria-hidden="true" />
-            완료
+            {tripSavePending ? '저장 중...' : '완료'}
           </button>
           <button
             className="secondary-button"
@@ -2983,14 +3137,14 @@ function App() {
         <div className="button-row sticky-save">
           <button
             className="primary-button"
-            disabled={!validation.valid}
+            disabled={!validation.valid || tripSavePending}
             onClick={() => {
               void saveCurrentTrip();
             }}
             type="button"
           >
             <Save aria-hidden="true" />
-            저장
+            {tripSavePending ? '저장 중...' : '저장'}
           </button>
           <button className="secondary-button" onClick={() => setView('summary')} type="button">
             요약으로
