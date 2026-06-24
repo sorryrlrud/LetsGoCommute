@@ -13,6 +13,8 @@ import { checkpointTypeLabels, transportModeLabels } from '../types/trip';
 import { formatTime } from '../utils/date';
 import { calculateTotalDuration, formatDuration } from '../utils/duration';
 
+type PlaceSaveAction = 'start' | 'end' | 'checkpoint';
+
 interface MapViewProps {
   points: GpsPoint[];
   checkpoints?: Checkpoint[];
@@ -24,8 +26,13 @@ interface MapViewProps {
   viewKey?: string;
   onCheckpointSelect?: (checkpointId: string) => void;
   onSavedPlaceSelect?: (placeId: string) => void;
+  onPlaceSaveRequest?: (
+    point: { lat: number; lng: number },
+    action: PlaceSaveAction,
+  ) => void;
   onMapPointSelect?: (point: { lat: number; lng: number }) => void;
   mapSelectionEnabled?: boolean;
+  placeSaveActionsEnabled?: boolean;
 }
 
 const fallbackCenter: LatLngExpression = [37.5665, 126.978];
@@ -249,6 +256,58 @@ function applyMapViewChange(
   }, 0);
 }
 
+function isCoarsePointerDevice() {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  return window.matchMedia('(hover: none), (pointer: coarse)').matches || 'ontouchstart' in window;
+}
+
+function isMapPointerEvent(event: L.LeafletEvent): event is L.LeafletMouseEvent {
+  return 'latlng' in event;
+}
+
+function createPlaceActionsPopupContent(
+  point: { lat: number; lng: number },
+  onAction: (action: PlaceSaveAction) => void,
+) {
+  const container = document.createElement('div');
+  container.className = 'map-place-actions-popup';
+
+  const title = document.createElement('strong');
+  title.textContent = '장소 저장';
+  container.appendChild(title);
+
+  const position = document.createElement('span');
+  position.textContent = `${point.lat.toFixed(5)}, ${point.lng.toFixed(5)}`;
+  container.appendChild(position);
+
+  const actions = [
+    ['start', '출발지로 저장'],
+    ['end', '도착지로 저장'],
+    ['checkpoint', '체크포인트로 저장'],
+  ] satisfies Array<[PlaceSaveAction, string]>;
+
+  const actionList = document.createElement('div');
+  actionList.className = 'map-place-actions';
+
+  actions.forEach(([action, label]) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `map-place-action-button ${action}`;
+    button.textContent = label;
+    button.addEventListener('click', () => onAction(action));
+    actionList.appendChild(button);
+  });
+
+  container.appendChild(actionList);
+  L.DomEvent.disableClickPropagation(container);
+  L.DomEvent.disableScrollPropagation(container);
+
+  return container;
+}
+
 export function MapView({
   points,
   checkpoints = emptyCheckpoints,
@@ -260,8 +319,10 @@ export function MapView({
   viewKey = 'default',
   onCheckpointSelect,
   onSavedPlaceSelect,
+  onPlaceSaveRequest,
   onMapPointSelect,
   mapSelectionEnabled = false,
+  placeSaveActionsEnabled = false,
 }: MapViewProps) {
   const mapElementRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -351,6 +412,96 @@ export function MapView({
       map.off('click', handleMapClick);
     };
   }, [mapSelectionEnabled, onMapPointSelect]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+
+    if (!map || !placeSaveActionsEnabled || !onPlaceSaveRequest) {
+      return;
+    }
+
+    let longPressTimer: number | null = null;
+    let suppressNextClick = false;
+
+    const clearLongPressTimer = () => {
+      if (longPressTimer !== null) {
+        window.clearTimeout(longPressTimer);
+        longPressTimer = null;
+      }
+    };
+
+    const openPlaceActionsPopup = (latLng: L.LatLng) => {
+      clearLongPressTimer();
+
+      const point = {
+        lat: latLng.lat,
+        lng: latLng.lng,
+      };
+      const popupContent = createPlaceActionsPopupContent(point, (action) => {
+        onPlaceSaveRequest(point, action);
+        map.closePopup();
+      });
+
+      L.popup({
+        autoClose: true,
+        closeButton: true,
+        className: 'map-place-actions-popup-shell',
+      })
+        .setLatLng(latLng)
+        .setContent(popupContent)
+        .openOn(map);
+    };
+
+    const handlePressStart = (event: L.LeafletEvent) => {
+      if (!isMapPointerEvent(event)) {
+        return;
+      }
+
+      clearLongPressTimer();
+      longPressTimer = window.setTimeout(() => {
+        suppressNextClick = true;
+        openPlaceActionsPopup(event.latlng);
+      }, 560);
+    };
+
+    const handleContextMenu = (event: L.LeafletEvent) => {
+      if (!isMapPointerEvent(event)) {
+        return;
+      }
+
+      event.originalEvent.preventDefault();
+      suppressNextClick = true;
+      openPlaceActionsPopup(event.latlng);
+    };
+
+    const handleClick = (event: L.LeafletEvent) => {
+      if (!isMapPointerEvent(event)) {
+        return;
+      }
+
+      if (suppressNextClick) {
+        suppressNextClick = false;
+        return;
+      }
+
+      if (isCoarsePointerDevice()) {
+        openPlaceActionsPopup(event.latlng);
+      }
+    };
+
+    map.on('mousedown touchstart', handlePressStart);
+    map.on('mouseup touchend mousemove dragstart zoomstart', clearLongPressTimer);
+    map.on('contextmenu', handleContextMenu);
+    map.on('click', handleClick);
+
+    return () => {
+      clearLongPressTimer();
+      map.off('mousedown touchstart', handlePressStart);
+      map.off('mouseup touchend mousemove dragstart zoomstart', clearLongPressTimer);
+      map.off('contextmenu', handleContextMenu);
+      map.off('click', handleClick);
+    };
+  }, [onPlaceSaveRequest, placeSaveActionsEnabled]);
 
   useEffect(() => {
     const map = mapRef.current;

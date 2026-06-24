@@ -157,6 +157,8 @@ const checkpointTypeOptions = Object.keys(checkpointTypeLabels) as Exclude<
 
 const DEV_DUMMY_MAX_COUNT = 8;
 
+type PlaceSaveAction = 'start' | 'end' | 'checkpoint';
+
 const DEV_ROUTE_POINTS: DevRoutePoint[] = [
   {
     key: 'home',
@@ -262,18 +264,6 @@ function formatDevRouteOffset(minutes: number) {
 
 function getSavedPlaceTypeLabel(type: CheckpointType) {
   return type ? checkpointTypeLabels[type] : '체크포인트';
-}
-
-function getSavedPlaceTone(place: SavedCheckpointPlace) {
-  if (place.type === 'start' || place.type === 'home') {
-    return 'start';
-  }
-
-  if (place.type === 'end' || place.type === 'work') {
-    return 'end';
-  }
-
-  return 'check';
 }
 
 function getDefaultSavedPlaceName(type: SavedPlaceDraftType) {
@@ -948,9 +938,6 @@ function App() {
   const [mapCheckpointEditor, setMapCheckpointEditor] =
     useState<MapCheckpointEditorState | null>(null);
   const [savedPlaceDraft, setSavedPlaceDraft] = useState<SavedPlaceDraftState | null>(null);
-  const [savedPlaceSelectionType, setSavedPlaceSelectionType] =
-    useState<SavedPlaceDraftType>('start');
-  const [savedPlaceSelectionEnabled, setSavedPlaceSelectionEnabled] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [storageError, setStorageError] = useState<string | null>(null);
   const [draftHydrated, setDraftHydrated] = useState(false);
@@ -1605,8 +1592,6 @@ function App() {
       return;
     }
 
-    setSavedPlaceSelectionEnabled(true);
-    setSavedPlaceSelectionType(place.type ?? '');
     setSavedPlaceDraft({
       editingPlaceId: place.id,
       name: place.name,
@@ -2394,8 +2379,6 @@ function App() {
       setComparisonTargetId(null);
       setMapCheckpointEditor(null);
       setSavedPlaceDraft(null);
-      setSavedPlaceSelectionType('start');
-      setSavedPlaceSelectionEnabled(false);
       showNotice('전체 데이터를 삭제했습니다.');
       setView('home');
     } catch (error) {
@@ -2403,56 +2386,30 @@ function App() {
     }
   }
 
-  function openSavedPlacePlanner(type: SavedPlaceDraftType = 'start') {
-    if (hasRecoverableTrip()) {
-      guardedSetView('settings');
-    } else {
-      setView('settings');
-    }
+  const openSavedPlaceDraftFromMap = useCallback(
+    (point: { lat: number; lng: number }, action: PlaceSaveAction) => {
+      if (hasRecoverableTrip()) {
+        showNotice('기록 중에는 새 장소를 저장할 수 없습니다.');
+        return;
+      }
 
-    beginSavedPlaceSelection(type);
-  }
+      const type: SavedPlaceDraftType = action === 'checkpoint' ? '' : action;
 
-  function beginSavedPlaceSelection(type: SavedPlaceDraftType = 'start') {
-    setSavedPlaceSelectionEnabled(true);
-    setSavedPlaceSelectionType(type);
-    setSavedPlaceDraft((draft) =>
-      draft
-        ? {
-            ...draft,
-            name: draft.name.trim().length > 0 ? draft.name : getDefaultSavedPlaceName(type),
-            type,
-          }
-        : draft,
-    );
-    showNotice('지도에서 저장할 지점을 선택해주세요.');
-  }
-
-  function selectSavedPlaceMapPoint(point: { lat: number; lng: number }) {
-    if (!savedPlaceSelectionEnabled) {
-      return;
-    }
-
-    const type = savedPlaceDraft?.type ?? savedPlaceSelectionType;
-    const name =
-      savedPlaceDraft?.name.trim().length ? savedPlaceDraft.name : getDefaultSavedPlaceName(type);
-
-    setSavedPlaceDraft({
-      editingPlaceId: savedPlaceDraft?.editingPlaceId ?? null,
-      name,
-      type,
-      lat: point.lat,
-      lng: point.lng,
-      accuracy: null,
-    });
-    showNotice('지도 지점을 선택했습니다. 이름과 유형을 확인해주세요.');
-  }
+      setSavedPlaceDraft({
+        editingPlaceId: null,
+        name: getDefaultSavedPlaceName(type),
+        type,
+        lat: point.lat,
+        lng: point.lng,
+        accuracy: null,
+      });
+    },
+    // This callback is only mounted when the home map is idle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [currentTrip, recordingStatus],
+  );
 
   function updateSavedPlaceDraft(patch: Partial<SavedPlaceDraftState>) {
-    if (patch.type !== undefined) {
-      setSavedPlaceSelectionType(patch.type);
-    }
-
     setSavedPlaceDraft((draft) => (draft ? { ...draft, ...patch } : draft));
   }
 
@@ -2768,6 +2725,8 @@ function App() {
     : 0;
 
   function renderHome() {
+    const canSavePlacesFromHomeMap = !hasRecoverableTrip() && !devSimulation.enabled;
+
     return (
       <section className="screen-grid home-screen">
         <div className="hero-copy">
@@ -2782,14 +2741,6 @@ function App() {
               <Play aria-hidden="true" />
               출발!
             </button>
-            <button
-              className="secondary-button"
-              onClick={() => openSavedPlacePlanner('start')}
-              type="button"
-            >
-              <MapPin aria-hidden="true" />
-              장소 지정
-            </button>
           </div>
         </div>
 
@@ -2799,10 +2750,18 @@ function App() {
             height="420px"
             mapSelectionEnabled={devSimulation.enabled}
             onMapPointSelect={selectDevMapPoint}
+            onPlaceSaveRequest={openSavedPlaceDraftFromMap}
+            onSavedPlaceSelect={canSavePlacesFromHomeMap ? openSavedPlaceEditor : undefined}
+            placeSaveActionsEnabled={canSavePlacesFromHomeMap}
             points={[]}
             savedPlaces={checkpointPlaces}
             viewKey="home"
           />
+          {canSavePlacesFromHomeMap ? (
+            <p className="map-place-hint">
+              지도를 길게 눌러 출발지, 도착지, 체크포인트 장소를 저장하세요.
+            </p>
+          ) : null}
           {renderDevMapPanel()}
         </div>
 
@@ -3517,171 +3476,6 @@ function App() {
     );
   }
 
-  function renderSavedPlacePlanner() {
-    const activeDraftType = savedPlaceDraft?.type ?? savedPlaceSelectionType;
-
-    return (
-      <section className="panel place-planner-panel">
-        <div className="panel-title-row">
-          <h2>지도 장소 사전 지정</h2>
-          <span className={`dev-mode-badge ${savedPlaceSelectionEnabled ? 'on' : ''}`}>
-            {savedPlaceSelectionEnabled ? '지도 선택 중' : '보기 모드'}
-          </span>
-        </div>
-        <MapView
-          currentPosition={currentPosition}
-          height="360px"
-          mapSelectionEnabled={savedPlaceSelectionEnabled}
-          onMapPointSelect={selectSavedPlaceMapPoint}
-          onSavedPlaceSelect={openSavedPlaceEditor}
-          points={[]}
-          savedPlaces={checkpointPlaces}
-          viewKey={`saved-place-planner-${savedPlaceSelectionEnabled ? 'select' : 'view'}`}
-        />
-        <div className="place-quick-actions">
-          <button
-            className={
-              savedPlaceSelectionEnabled && activeDraftType === 'start'
-                ? 'primary-button'
-                : 'secondary-button'
-            }
-            onClick={() => beginSavedPlaceSelection('start')}
-            type="button"
-          >
-            <MapPin aria-hidden="true" />
-            출발지 지정
-          </button>
-          <button
-            className={
-              savedPlaceSelectionEnabled && activeDraftType === 'end'
-                ? 'primary-button'
-                : 'secondary-button'
-            }
-            onClick={() => beginSavedPlaceSelection('end')}
-            type="button"
-          >
-            <MapPin aria-hidden="true" />
-            도착지 지정
-          </button>
-          <button
-            className={
-              savedPlaceSelectionEnabled && activeDraftType === ''
-                ? 'primary-button'
-                : 'secondary-button'
-            }
-            onClick={() => beginSavedPlaceSelection('')}
-            type="button"
-          >
-            <MapPin aria-hidden="true" />
-            체크포인트 지정
-          </button>
-        </div>
-
-        {savedPlaceDraft ? (
-          <div className="place-draft-form">
-            <label>
-              장소 이름
-              <input
-                onChange={(event) => updateSavedPlaceDraft({ name: event.target.value })}
-                placeholder="장소 이름"
-                value={savedPlaceDraft.name}
-              />
-            </label>
-            <label>
-              장소 유형
-              <select
-                onChange={(event) =>
-                  updateSavedPlaceDraft({
-                    type: event.target.value as SavedPlaceDraftType,
-                  })
-                }
-                value={savedPlaceDraft.type}
-              >
-                <option value="">체크포인트</option>
-                {checkpointTypeOptions.map((type) => (
-                  <option key={type} value={type}>
-                    {checkpointTypeLabels[type]}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <div className="place-draft-coordinates">
-              <MapPin aria-hidden="true" />
-              <span>
-                {formatCoordinate(savedPlaceDraft.lat)}, {formatCoordinate(savedPlaceDraft.lng)}
-              </span>
-            </div>
-            <div className="button-row">
-              <button
-                className="primary-button"
-                onClick={() => {
-                  void saveSavedPlaceDraft();
-                }}
-                type="button"
-              >
-                <Save aria-hidden="true" />
-                장소 저장
-              </button>
-              <button
-                className="secondary-button"
-                onClick={() => setSavedPlaceDraft(null)}
-                type="button"
-              >
-                선택 취소
-              </button>
-            </div>
-          </div>
-        ) : (
-          <p className="muted">지도를 눌러 저장할 위치를 선택하세요.</p>
-        )}
-
-        <div className="saved-place-list">
-          {checkpointPlaces.length === 0 ? (
-            <p className="muted">아직 저장한 장소가 없습니다.</p>
-          ) : (
-            checkpointPlaces.map((place) => (
-              <article className="saved-place-row" key={place.id}>
-                <span className={`place-type-badge ${getSavedPlaceTone(place)}`}>
-                  {getSavedPlaceTypeLabel(place.type)}
-                </span>
-                <div>
-                  <strong>{place.name}</strong>
-                  <span>
-                    {formatCoordinate(place.lat)}, {formatCoordinate(place.lng)} · 사용{' '}
-                    {place.usedCount}회
-                  </span>
-                  {isStartPlaceCandidate(place) ? (
-                    <small>접속 시 현재 위치가 100m 이내이면 출발 확인을 표시합니다.</small>
-                  ) : null}
-                </div>
-                <div className="checkpoint-action-column">
-                  <button
-                    aria-label="저장 장소 편집"
-                    className="checkpoint-icon-button"
-                    onClick={() => openSavedPlaceEditor(place.id)}
-                    title="편집"
-                    type="button"
-                  >
-                    <Pencil aria-hidden="true" />
-                  </button>
-                  <button
-                    aria-label="저장 장소 삭제"
-                    className="checkpoint-icon-button danger"
-                    onClick={() => confirmDeleteCheckpointPlace(place.id)}
-                    title="삭제"
-                    type="button"
-                  >
-                    <Trash2 aria-hidden="true" />
-                  </button>
-                </div>
-              </article>
-            ))
-          )}
-        </div>
-      </section>
-    );
-  }
-
   function renderSettings() {
     return (
       <section className="detail-layout">
@@ -3701,7 +3495,6 @@ function App() {
           <Metric label="저장 방식" value="IndexedDB 로컬 저장" />
           <Metric label="알림 권한" value={getNotificationPermissionLabel(notificationPermission)} />
         </section>
-        {renderSavedPlacePlanner()}
         <section className="panel settings-panel">
           <h2>체크포인트 자동저장과 알림</h2>
           <label className="setting-toggle">
@@ -3767,6 +3560,111 @@ function App() {
           전체 데이터 삭제
         </button>
       </section>
+    );
+  }
+
+  function renderSavedPlaceDialog() {
+    if (!savedPlaceDraft) {
+      return null;
+    }
+
+    const existingPlace = savedPlaceDraft.editingPlaceId
+      ? checkpointPlaces.find((place) => place.id === savedPlaceDraft.editingPlaceId)
+      : null;
+
+    return (
+      <div className="dialog-backdrop">
+        <section
+          aria-labelledby="saved-place-dialog-title"
+          className="confirm-dialog checkpoint-dialog place-save-dialog"
+          role="dialog"
+        >
+          <div className="dialog-symbol">
+            <MapPin aria-hidden="true" />
+          </div>
+          <div>
+            <h2 id="saved-place-dialog-title">
+              {existingPlace ? '저장 장소 편집' : '장소 저장'}
+            </h2>
+            <p>
+              {formatCoordinate(savedPlaceDraft.lat)}, {formatCoordinate(savedPlaceDraft.lng)}
+            </p>
+          </div>
+          <div className="prompt-form">
+            <label>
+              장소 이름
+              <input
+                onChange={(event) => updateSavedPlaceDraft({ name: event.target.value })}
+                placeholder="장소 이름"
+                value={savedPlaceDraft.name}
+              />
+            </label>
+            <label>
+              장소 유형
+              <select
+                onChange={(event) =>
+                  updateSavedPlaceDraft({
+                    type: event.target.value as SavedPlaceDraftType,
+                  })
+                }
+                value={savedPlaceDraft.type}
+              >
+                <option value="">체크포인트</option>
+                {checkpointTypeOptions.map((type) => (
+                  <option key={type} value={type}>
+                    {checkpointTypeLabels[type]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="prompt-segment">
+              <strong>{getSavedPlaceTypeLabel(savedPlaceDraft.type || null)}</strong>
+              <span>
+                {existingPlace
+                  ? `기존 장소 · 사용 ${existingPlace.usedCount}회`
+                  : '새 장소로 저장됩니다.'}
+              </span>
+              {savedPlaceDraft.type === 'start' || savedPlaceDraft.type === 'home' ? (
+                <span className="history-match">
+                  접속 시 현재 위치가 100m 이내이면 출발 확인을 표시합니다.
+                </span>
+              ) : null}
+            </div>
+          </div>
+          <div className="dialog-actions">
+            {existingPlace ? (
+              <button
+                className="danger-button subtle"
+                onClick={() => {
+                  setSavedPlaceDraft(null);
+                  confirmDeleteCheckpointPlace(existingPlace.id);
+                }}
+                type="button"
+              >
+                <Trash2 aria-hidden="true" />
+                삭제
+              </button>
+            ) : null}
+            <button
+              className="secondary-button"
+              onClick={() => setSavedPlaceDraft(null)}
+              type="button"
+            >
+              취소
+            </button>
+            <button
+              className="primary-button"
+              onClick={() => {
+                void saveSavedPlaceDraft();
+              }}
+              type="button"
+            >
+              <Save aria-hidden="true" />
+              저장
+            </button>
+          </div>
+        </section>
+      </div>
     );
   }
 
@@ -4135,6 +4033,7 @@ function App() {
       {notice ? <div className="toast">{notice}</div> : null}
       {renderActiveTripReturn()}
       {renderContent()}
+      {renderSavedPlaceDialog()}
       {renderMapCheckpointEditor()}
       {renderCheckpointPrompt()}
       <ConfirmDialog
