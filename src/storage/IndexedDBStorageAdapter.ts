@@ -125,6 +125,14 @@ export class IndexedDBStorageAdapter implements StorageAdapter {
     await requestToPromise(store.put(place));
   }
 
+  async deleteCheckpointPlace(id: string): Promise<void> {
+    const db = await this.open();
+    const transaction = db.transaction(CHECKPOINT_PLACE_STORE, 'readwrite');
+    const store = transaction.objectStore(CHECKPOINT_PLACE_STORE);
+
+    await requestToPromise(store.delete(id));
+  }
+
   async clearCheckpointPlaces(): Promise<void> {
     const db = await this.open();
     const transaction = db.transaction(CHECKPOINT_PLACE_STORE, 'readwrite');

@@ -67,6 +67,7 @@ const GPS_DISTANCE_SAVE_METERS = 8;
 const GPS_TURN_SAVE_DEGREES = 35;
 const GPS_TURN_MIN_LEG_METERS = 5;
 const CHECKPOINT_PLACE_MATCH_RADIUS_METERS = 100;
+const START_PLACE_PROMPT_RADIUS_METERS = 100;
 const AUTO_CHECKPOINT_RADIUS_METERS = 80;
 const AUTO_CHECKPOINT_MIN_DISTANCE_FROM_LAST_METERS = 120;
 const DRAFT_STALE_PAUSE_MS = 90_000;
@@ -93,6 +94,7 @@ interface ConfirmState {
   description: string;
   confirmLabel?: string;
   tone?: 'primary' | 'danger';
+  onCancel?: () => void;
   onConfirm: () => void;
 }
 
@@ -113,6 +115,17 @@ interface MapCheckpointEditorState {
   type: CheckpointType;
   memo: string;
   transportMode: TransportMode | null;
+}
+
+type SavedPlaceDraftType = Exclude<CheckpointType, null> | '';
+
+interface SavedPlaceDraftState {
+  editingPlaceId: string | null;
+  name: string;
+  type: SavedPlaceDraftType;
+  lat: number;
+  lng: number;
+  accuracy: number | null;
 }
 
 interface DevSimulationState {
@@ -245,6 +258,30 @@ function getDevRouteRecordedAt(routePoint: DevRoutePoint, state: DevSimulationSt
 
 function formatDevRouteOffset(minutes: number) {
   return minutes === 0 ? '출발' : `+${minutes}분`;
+}
+
+function getSavedPlaceTypeLabel(type: CheckpointType) {
+  return type ? checkpointTypeLabels[type] : '체크포인트';
+}
+
+function getSavedPlaceTone(place: SavedCheckpointPlace) {
+  if (place.type === 'start' || place.type === 'home') {
+    return 'start';
+  }
+
+  if (place.type === 'end' || place.type === 'work') {
+    return 'end';
+  }
+
+  return 'check';
+}
+
+function getDefaultSavedPlaceName(type: SavedPlaceDraftType) {
+  return type ? checkpointTypeLabels[type] : '체크포인트';
+}
+
+function formatCoordinate(value: number) {
+  return value.toFixed(5);
 }
 
 function createDefaultAppSettings(): AppSettings {
@@ -565,9 +602,17 @@ function getInitialGpsStatus(): GpsStatus {
   };
 }
 
-function createTripFromStart(point: GpsPoint): TripRecord {
+function createTripFromStart(
+  point: GpsPoint,
+  startPlace: SavedCheckpointPlace | null = null,
+): TripRecord {
   const startedAt = point.recordedAt;
-  const startCheckpoint = createCheckpoint(point, 0, 'start', '출발지');
+  const startCheckpoint = createCheckpoint(
+    point,
+    0,
+    startPlace?.type ?? 'start',
+    startPlace?.name.trim() || '출발지',
+  );
 
   return {
     id: generateId(),
@@ -737,6 +782,26 @@ function findCheckpointPlaceMatch(
   return candidates[0] ?? null;
 }
 
+function isStartPlaceCandidate(place: SavedCheckpointPlace) {
+  return place.type === 'start' || place.type === 'home';
+}
+
+function findStartPlacePromptMatch(
+  point: GpsPoint,
+  places: SavedCheckpointPlace[],
+): CheckpointPlaceMatch | null {
+  const candidates = places
+    .filter(isStartPlaceCandidate)
+    .map((place) => ({
+      place,
+      distanceMeters: calculateDistanceMeters(point, place),
+    }))
+    .filter((candidate) => candidate.distanceMeters <= START_PLACE_PROMPT_RADIUS_METERS)
+    .sort((a, b) => a.distanceMeters - b.distanceMeters);
+
+  return candidates[0] ?? null;
+}
+
 function getAutoCheckpointVisitedPlaceIds(
   trip: TripRecord,
   places: SavedCheckpointPlace[],
@@ -882,6 +947,10 @@ function App() {
   const [showCheckpointEditor, setShowCheckpointEditor] = useState(false);
   const [mapCheckpointEditor, setMapCheckpointEditor] =
     useState<MapCheckpointEditorState | null>(null);
+  const [savedPlaceDraft, setSavedPlaceDraft] = useState<SavedPlaceDraftState | null>(null);
+  const [savedPlaceSelectionType, setSavedPlaceSelectionType] =
+    useState<SavedPlaceDraftType>('start');
+  const [savedPlaceSelectionEnabled, setSavedPlaceSelectionEnabled] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [storageError, setStorageError] = useState<string | null>(null);
   const [draftHydrated, setDraftHydrated] = useState(false);
@@ -900,6 +969,7 @@ function App() {
   const showCheckpointEditorRef = useRef(showCheckpointEditor);
   const lastSavedPointAtRef = useRef<number>(0);
   const draftPersistTimerRef = useRef<number | null>(null);
+  const autoStartPromptedPlaceIdRef = useRef<string | null>(null);
   const autoCheckpointVisitedPlaceIdsRef = useRef<Set<string>>(new Set());
   const autoCheckpointSavingRef = useRef(false);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
@@ -1117,6 +1187,47 @@ function App() {
     // GPS watch is registered once and reads live recording state from refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (
+      !draftHydrated ||
+      confirmState ||
+      currentTrip ||
+      recordingStatus !== 'idle' ||
+      !currentPosition
+    ) {
+      return;
+    }
+
+    const match = findStartPlacePromptMatch(currentPosition, checkpointPlaces);
+
+    if (!match) {
+      autoStartPromptedPlaceIdRef.current = null;
+      return;
+    }
+
+    if (autoStartPromptedPlaceIdRef.current === match.place.id) {
+      return;
+    }
+
+    autoStartPromptedPlaceIdRef.current = match.place.id;
+
+    requestConfirmation({
+      title: '출발지 근처입니다',
+      description: `${match.place.name}에서 약 ${Math.round(
+        match.distanceMeters,
+      )}m 떨어져 있습니다. 바로 출근 기록을 시작할까요?`,
+      confirmLabel: '바로 출발',
+      onConfirm: () => {
+        void startRecording({
+          startPlace: match.place,
+          startPoint: currentPosition,
+        });
+      },
+    });
+    // Auto-start prompt should react only to live location and saved-place state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checkpointPlaces, confirmState, currentPosition, currentTrip, draftHydrated, recordingStatus]);
 
   async function loadTrips() {
     try {
@@ -1487,6 +1598,25 @@ function App() {
     [selectedTrip],
   );
 
+  const openSavedPlaceEditor = useCallback((placeId: string) => {
+    const place = checkpointPlacesRef.current.find((item) => item.id === placeId);
+
+    if (!place) {
+      return;
+    }
+
+    setSavedPlaceSelectionEnabled(true);
+    setSavedPlaceSelectionType(place.type ?? '');
+    setSavedPlaceDraft({
+      editingPlaceId: place.id,
+      name: place.name,
+      type: place.type ?? '',
+      lat: place.lat,
+      lng: place.lng,
+      accuracy: place.accuracy,
+    });
+  }, []);
+
   function guardedSetView(nextView: AppView) {
     if (nextView === view) {
       return;
@@ -1572,12 +1702,19 @@ function App() {
     });
   }
 
-  async function startRecording() {
+  async function startRecording(options: {
+    startPlace?: SavedCheckpointPlace | null;
+    startPoint?: GpsPoint | null;
+  } = {}) {
     setConfirmState(null);
 
     try {
-      const point = await requestFreshPosition();
-      const trip = createTripFromStart(point);
+      const point = options.startPoint ?? (await requestFreshPosition());
+      const matchedStartPlace =
+        options.startPlace ??
+        findStartPlacePromptMatch(point, checkpointPlacesRef.current)?.place ??
+        null;
+      const trip = createTripFromStart(point, matchedStartPlace);
       lastSavedPointAtRef.current = new Date(point.recordedAt).getTime();
       setCurrentTrip(trip);
       setActivePauseStartedAt(null);
@@ -1586,6 +1723,9 @@ function App() {
       setMapCheckpointEditor(null);
       setRecordingStatus('recording');
       setView('recording');
+      if (matchedStartPlace) {
+        void markCheckpointPlaceUsed(matchedStartPlace, point);
+      }
       showNotice('출발! GPS 기록을 시작했습니다.');
     } catch (error) {
       showNotice(error instanceof Error ? error.message : '출발 위치를 확인하지 못했습니다.');
@@ -1731,6 +1871,31 @@ function App() {
     setCheckpointPrompt((prompt) => (prompt ? { ...prompt, ...patch } : prompt));
   }
 
+  function upsertCheckpointPlace(place: SavedCheckpointPlace) {
+    setCheckpointPlaces((places) =>
+      [place, ...places.filter((item) => item.id !== place.id)].sort((a, b) =>
+        b.lastUsedAt.localeCompare(a.lastUsedAt),
+      ),
+    );
+  }
+
+  async function markCheckpointPlaceUsed(place: SavedCheckpointPlace, point: GpsPoint) {
+    const nowIso = point.recordedAt;
+    const updatedPlace: SavedCheckpointPlace = {
+      ...place,
+      updatedAt: nowIso,
+      lastUsedAt: nowIso,
+      usedCount: place.usedCount + 1,
+    };
+
+    try {
+      await storageAdapter.saveCheckpointPlace(updatedPlace);
+      upsertCheckpointPlace(updatedPlace);
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : '장소 이력 갱신에 실패했습니다.');
+    }
+  }
+
   async function saveCheckpointPlaceFromPrompt(
     prompt: CheckpointPromptState,
     checkpoint: Checkpoint,
@@ -1759,11 +1924,7 @@ function App() {
     };
 
     await storageAdapter.saveCheckpointPlace(place);
-    setCheckpointPlaces((places) =>
-      [place, ...places.filter((item) => item.id !== place.id)].sort((a, b) =>
-        b.lastUsedAt.localeCompare(a.lastUsedAt),
-      ),
-    );
+    upsertCheckpointPlace(place);
   }
 
   async function saveCheckpointPrompt() {
@@ -2232,10 +2393,136 @@ function App() {
       setSelectedTripId(null);
       setComparisonTargetId(null);
       setMapCheckpointEditor(null);
+      setSavedPlaceDraft(null);
+      setSavedPlaceSelectionType('start');
+      setSavedPlaceSelectionEnabled(false);
       showNotice('전체 데이터를 삭제했습니다.');
       setView('home');
     } catch (error) {
       showNotice(error instanceof Error ? error.message : '전체 데이터 삭제에 실패했습니다.');
+    }
+  }
+
+  function openSavedPlacePlanner(type: SavedPlaceDraftType = 'start') {
+    if (hasRecoverableTrip()) {
+      guardedSetView('settings');
+    } else {
+      setView('settings');
+    }
+
+    beginSavedPlaceSelection(type);
+  }
+
+  function beginSavedPlaceSelection(type: SavedPlaceDraftType = 'start') {
+    setSavedPlaceSelectionEnabled(true);
+    setSavedPlaceSelectionType(type);
+    setSavedPlaceDraft((draft) =>
+      draft
+        ? {
+            ...draft,
+            name: draft.name.trim().length > 0 ? draft.name : getDefaultSavedPlaceName(type),
+            type,
+          }
+        : draft,
+    );
+    showNotice('지도에서 저장할 지점을 선택해주세요.');
+  }
+
+  function selectSavedPlaceMapPoint(point: { lat: number; lng: number }) {
+    if (!savedPlaceSelectionEnabled) {
+      return;
+    }
+
+    const type = savedPlaceDraft?.type ?? savedPlaceSelectionType;
+    const name =
+      savedPlaceDraft?.name.trim().length ? savedPlaceDraft.name : getDefaultSavedPlaceName(type);
+
+    setSavedPlaceDraft({
+      editingPlaceId: savedPlaceDraft?.editingPlaceId ?? null,
+      name,
+      type,
+      lat: point.lat,
+      lng: point.lng,
+      accuracy: null,
+    });
+    showNotice('지도 지점을 선택했습니다. 이름과 유형을 확인해주세요.');
+  }
+
+  function updateSavedPlaceDraft(patch: Partial<SavedPlaceDraftState>) {
+    if (patch.type !== undefined) {
+      setSavedPlaceSelectionType(patch.type);
+    }
+
+    setSavedPlaceDraft((draft) => (draft ? { ...draft, ...patch } : draft));
+  }
+
+  async function saveSavedPlaceDraft() {
+    if (!savedPlaceDraft) {
+      return;
+    }
+
+    const name = savedPlaceDraft.name.trim();
+
+    if (name.length === 0) {
+      showNotice('장소 이름을 입력해주세요.');
+      return;
+    }
+
+    const existingPlace = savedPlaceDraft.editingPlaceId
+      ? checkpointPlacesRef.current.find((place) => place.id === savedPlaceDraft.editingPlaceId)
+      : null;
+    const nowIso = new Date().toISOString();
+    const place: SavedCheckpointPlace = {
+      id: existingPlace?.id ?? generateId(),
+      name,
+      type: savedPlaceDraft.type === '' ? null : savedPlaceDraft.type,
+      lat: savedPlaceDraft.lat,
+      lng: savedPlaceDraft.lng,
+      accuracy: savedPlaceDraft.accuracy,
+      createdAt: existingPlace?.createdAt ?? nowIso,
+      updatedAt: nowIso,
+      lastUsedAt: existingPlace?.lastUsedAt ?? nowIso,
+      usedCount: existingPlace?.usedCount ?? 0,
+    };
+
+    try {
+      await storageAdapter.saveCheckpointPlace(place);
+      upsertCheckpointPlace(place);
+      setSavedPlaceDraft(null);
+      showNotice('지도 장소를 저장했습니다.');
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : '지도 장소 저장에 실패했습니다.');
+    }
+  }
+
+  function confirmDeleteCheckpointPlace(placeId: string) {
+    const place = checkpointPlacesRef.current.find((item) => item.id === placeId);
+
+    if (!place) {
+      return;
+    }
+
+    requestConfirmation({
+      title: '저장 장소 삭제',
+      description: `${place.name} 장소를 삭제합니다. 이동 기록은 삭제되지 않습니다.`,
+      confirmLabel: '삭제',
+      tone: 'danger',
+      onConfirm: () => {
+        void deleteCheckpointPlace(place.id);
+      },
+    });
+  }
+
+  async function deleteCheckpointPlace(placeId: string) {
+    setConfirmState(null);
+
+    try {
+      await storageAdapter.deleteCheckpointPlace(placeId);
+      setCheckpointPlaces((places) => places.filter((place) => place.id !== placeId));
+      setSavedPlaceDraft((draft) => (draft?.editingPlaceId === placeId ? null : draft));
+      showNotice('저장 장소를 삭제했습니다.');
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : '저장 장소 삭제에 실패했습니다.');
     }
   }
 
@@ -2494,6 +2781,14 @@ function App() {
             <button className="start-button" onClick={confirmStart} type="button">
               <Play aria-hidden="true" />
               출발!
+            </button>
+            <button
+              className="secondary-button"
+              onClick={() => openSavedPlacePlanner('start')}
+              type="button"
+            >
+              <MapPin aria-hidden="true" />
+              장소 지정
             </button>
           </div>
         </div>
@@ -3222,6 +3517,171 @@ function App() {
     );
   }
 
+  function renderSavedPlacePlanner() {
+    const activeDraftType = savedPlaceDraft?.type ?? savedPlaceSelectionType;
+
+    return (
+      <section className="panel place-planner-panel">
+        <div className="panel-title-row">
+          <h2>지도 장소 사전 지정</h2>
+          <span className={`dev-mode-badge ${savedPlaceSelectionEnabled ? 'on' : ''}`}>
+            {savedPlaceSelectionEnabled ? '지도 선택 중' : '보기 모드'}
+          </span>
+        </div>
+        <MapView
+          currentPosition={currentPosition}
+          height="360px"
+          mapSelectionEnabled={savedPlaceSelectionEnabled}
+          onMapPointSelect={selectSavedPlaceMapPoint}
+          onSavedPlaceSelect={openSavedPlaceEditor}
+          points={[]}
+          savedPlaces={checkpointPlaces}
+          viewKey={`saved-place-planner-${savedPlaceSelectionEnabled ? 'select' : 'view'}`}
+        />
+        <div className="place-quick-actions">
+          <button
+            className={
+              savedPlaceSelectionEnabled && activeDraftType === 'start'
+                ? 'primary-button'
+                : 'secondary-button'
+            }
+            onClick={() => beginSavedPlaceSelection('start')}
+            type="button"
+          >
+            <MapPin aria-hidden="true" />
+            출발지 지정
+          </button>
+          <button
+            className={
+              savedPlaceSelectionEnabled && activeDraftType === 'end'
+                ? 'primary-button'
+                : 'secondary-button'
+            }
+            onClick={() => beginSavedPlaceSelection('end')}
+            type="button"
+          >
+            <MapPin aria-hidden="true" />
+            도착지 지정
+          </button>
+          <button
+            className={
+              savedPlaceSelectionEnabled && activeDraftType === ''
+                ? 'primary-button'
+                : 'secondary-button'
+            }
+            onClick={() => beginSavedPlaceSelection('')}
+            type="button"
+          >
+            <MapPin aria-hidden="true" />
+            체크포인트 지정
+          </button>
+        </div>
+
+        {savedPlaceDraft ? (
+          <div className="place-draft-form">
+            <label>
+              장소 이름
+              <input
+                onChange={(event) => updateSavedPlaceDraft({ name: event.target.value })}
+                placeholder="장소 이름"
+                value={savedPlaceDraft.name}
+              />
+            </label>
+            <label>
+              장소 유형
+              <select
+                onChange={(event) =>
+                  updateSavedPlaceDraft({
+                    type: event.target.value as SavedPlaceDraftType,
+                  })
+                }
+                value={savedPlaceDraft.type}
+              >
+                <option value="">체크포인트</option>
+                {checkpointTypeOptions.map((type) => (
+                  <option key={type} value={type}>
+                    {checkpointTypeLabels[type]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="place-draft-coordinates">
+              <MapPin aria-hidden="true" />
+              <span>
+                {formatCoordinate(savedPlaceDraft.lat)}, {formatCoordinate(savedPlaceDraft.lng)}
+              </span>
+            </div>
+            <div className="button-row">
+              <button
+                className="primary-button"
+                onClick={() => {
+                  void saveSavedPlaceDraft();
+                }}
+                type="button"
+              >
+                <Save aria-hidden="true" />
+                장소 저장
+              </button>
+              <button
+                className="secondary-button"
+                onClick={() => setSavedPlaceDraft(null)}
+                type="button"
+              >
+                선택 취소
+              </button>
+            </div>
+          </div>
+        ) : (
+          <p className="muted">지도를 눌러 저장할 위치를 선택하세요.</p>
+        )}
+
+        <div className="saved-place-list">
+          {checkpointPlaces.length === 0 ? (
+            <p className="muted">아직 저장한 장소가 없습니다.</p>
+          ) : (
+            checkpointPlaces.map((place) => (
+              <article className="saved-place-row" key={place.id}>
+                <span className={`place-type-badge ${getSavedPlaceTone(place)}`}>
+                  {getSavedPlaceTypeLabel(place.type)}
+                </span>
+                <div>
+                  <strong>{place.name}</strong>
+                  <span>
+                    {formatCoordinate(place.lat)}, {formatCoordinate(place.lng)} · 사용{' '}
+                    {place.usedCount}회
+                  </span>
+                  {isStartPlaceCandidate(place) ? (
+                    <small>접속 시 현재 위치가 100m 이내이면 출발 확인을 표시합니다.</small>
+                  ) : null}
+                </div>
+                <div className="checkpoint-action-column">
+                  <button
+                    aria-label="저장 장소 편집"
+                    className="checkpoint-icon-button"
+                    onClick={() => openSavedPlaceEditor(place.id)}
+                    title="편집"
+                    type="button"
+                  >
+                    <Pencil aria-hidden="true" />
+                  </button>
+                  <button
+                    aria-label="저장 장소 삭제"
+                    className="checkpoint-icon-button danger"
+                    onClick={() => confirmDeleteCheckpointPlace(place.id)}
+                    title="삭제"
+                    type="button"
+                  >
+                    <Trash2 aria-hidden="true" />
+                  </button>
+                </div>
+              </article>
+            ))
+          )}
+        </div>
+      </section>
+    );
+  }
+
   function renderSettings() {
     return (
       <section className="detail-layout">
@@ -3241,6 +3701,7 @@ function App() {
           <Metric label="저장 방식" value="IndexedDB 로컬 저장" />
           <Metric label="알림 권한" value={getNotificationPermissionLabel(notificationPermission)} />
         </section>
+        {renderSavedPlacePlanner()}
         <section className="panel settings-panel">
           <h2>체크포인트 자동저장과 알림</h2>
           <label className="setting-toggle">
@@ -3678,7 +4139,14 @@ function App() {
       {renderCheckpointPrompt()}
       <ConfirmDialog
         description={confirmState?.description ?? ''}
-        onCancel={() => setConfirmState(null)}
+        onCancel={() => {
+          if (confirmState?.onCancel) {
+            confirmState.onCancel();
+            return;
+          }
+
+          setConfirmState(null);
+        }}
         onConfirm={() => confirmState?.onConfirm()}
         open={confirmState !== null}
         title={confirmState?.title ?? ''}

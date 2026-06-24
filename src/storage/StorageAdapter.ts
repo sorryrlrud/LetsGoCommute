@@ -13,6 +13,7 @@ export interface StorageAdapter {
   clearAllTrips(): Promise<void>;
   getAllCheckpointPlaces(): Promise<SavedCheckpointPlace[]>;
   saveCheckpointPlace(place: SavedCheckpointPlace): Promise<void>;
+  deleteCheckpointPlace(id: string): Promise<void>;
   clearCheckpointPlaces(): Promise<void>;
   getActiveTripDraft(): Promise<ActiveTripDraft | null>;
   saveActiveTripDraft(draft: ActiveTripDraft): Promise<void>;

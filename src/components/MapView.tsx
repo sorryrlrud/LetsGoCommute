@@ -23,6 +23,7 @@ interface MapViewProps {
   height?: string;
   viewKey?: string;
   onCheckpointSelect?: (checkpointId: string) => void;
+  onSavedPlaceSelect?: (placeId: string) => void;
   onMapPointSelect?: (point: { lat: number; lng: number }) => void;
   mapSelectionEnabled?: boolean;
 }
@@ -144,9 +145,18 @@ function makeCurrentMarkerIcon() {
 }
 
 function makeSavedPlaceIcon(place: SavedCheckpointPlace) {
+  const tone =
+    place.type === 'start' || place.type === 'home'
+      ? 'start'
+      : place.type === 'end' || place.type === 'work'
+        ? 'end'
+        : 'check';
+  const label =
+    tone === 'start' ? 'S' : tone === 'end' ? 'G' : place.type === null ? '+' : '★';
+
   return L.divIcon({
-    className: 'map-saved-place-marker',
-    html: `<span class="map-saved-place-pin">★</span><span class="map-saved-place-label">${escapeHtml(
+    className: `map-saved-place-marker ${tone}`,
+    html: `<span class="map-saved-place-pin">${label}</span><span class="map-saved-place-label">${escapeHtml(
       place.name,
     )}</span>`,
     iconSize: [132, 34],
@@ -249,6 +259,7 @@ export function MapView({
   height = '360px',
   viewKey = 'default',
   onCheckpointSelect,
+  onSavedPlaceSelect,
   onMapPointSelect,
   mapSelectionEnabled = false,
 }: MapViewProps) {
@@ -380,6 +391,13 @@ export function MapView({
         opacity: 0.88,
       }).bindPopup(buildSavedPlacePopup(place));
 
+      if (onSavedPlaceSelect) {
+        marker.on('click', (event) => {
+          L.DomEvent.stopPropagation(event);
+          onSavedPlaceSelect(place.id);
+        });
+      }
+
       marker.addTo(layers);
       savedPlaceBounds.push([place.lat, place.lng]);
     });
@@ -447,6 +465,7 @@ export function MapView({
     comparePoints,
     currentPosition,
     onCheckpointSelect,
+    onSavedPlaceSelect,
     points,
     savedPlaces,
     segments,

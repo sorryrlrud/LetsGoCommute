@@ -395,6 +395,25 @@ button:disabled {
   width: 26px;
 }
 
+.map-saved-place-marker.start .map-saved-place-pin {
+  background: #15ad78;
+  border-style: solid;
+  color: #ffffff;
+}
+
+.map-saved-place-marker.end .map-saved-place-pin {
+  background: #346df1;
+  border-style: solid;
+  color: #ffffff;
+}
+
+.map-saved-place-marker.check .map-saved-place-pin {
+  background: #ffdc2e;
+  border-color: #17211f;
+  border-style: solid;
+  color: #17211f;
+}
+
 .map-saved-place-label {
   background: #f4f8ff;
   border: 2px solid #346df1;
@@ -916,6 +935,10 @@ textarea {
   gap: 12px;
 }
 
+.place-planner-panel {
+  gap: 16px;
+}
+
 .panel-title-row {
   align-items: center;
   display: flex;
@@ -1043,6 +1066,112 @@ textarea {
 
 .dev-tool-actions {
   align-items: stretch;
+}
+
+.place-quick-actions,
+.place-draft-form {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.place-draft-form {
+  align-items: end;
+  background: #f9fbf7;
+  border: 2px dashed #95a39f;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.place-draft-form label {
+  color: #17211f;
+  display: grid;
+  font-weight: 900;
+  gap: 8px;
+}
+
+.place-draft-coordinates {
+  align-items: center;
+  background: #ffffff;
+  border: 2px solid #17211f;
+  border-radius: 8px;
+  color: #17211f;
+  display: flex;
+  font-weight: 900;
+  gap: 8px;
+  min-height: 44px;
+  padding: 9px 11px;
+}
+
+.place-draft-coordinates svg {
+  color: #346df1;
+  height: 18px;
+  width: 18px;
+}
+
+.place-draft-form .button-row {
+  grid-column: 1 / -1;
+}
+
+.saved-place-list {
+  display: grid;
+  gap: 10px;
+}
+
+.saved-place-row {
+  align-items: center;
+  border-bottom: 1px solid #dce4e1;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding-bottom: 10px;
+}
+
+.saved-place-row:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.saved-place-row > div:not(.checkpoint-action-column) {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.saved-place-row span,
+.saved-place-row small {
+  color: #5d6864;
+  font-size: 0.86rem;
+}
+
+.saved-place-row small {
+  font-weight: 800;
+}
+
+.place-type-badge {
+  align-items: center;
+  border: 2px solid #17211f;
+  border-radius: 999px;
+  color: #17211f;
+  display: inline-flex;
+  font-size: 0.78rem;
+  font-weight: 950;
+  justify-content: center;
+  min-width: 74px;
+  padding: 6px 9px;
+  white-space: nowrap;
+}
+
+.place-type-badge.start {
+  background: #e9fff6;
+}
+
+.place-type-badge.end {
+  background: #eef5ff;
+}
+
+.place-type-badge.check {
+  background: #fff5cf;
 }
 
 .dev-dummy-tools {
@@ -1263,6 +1392,11 @@ textarea {
     grid-template-columns: 1fr;
   }
 
+  .place-quick-actions,
+  .place-draft-form {
+    grid-template-columns: 1fr;
+  }
+
   .dev-route-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1316,6 +1450,11 @@ textarea {
 
   .trip-card-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .saved-place-row {
+    align-items: stretch;
+    grid-template-columns: 1fr;
   }
 
   .timer-grid {
