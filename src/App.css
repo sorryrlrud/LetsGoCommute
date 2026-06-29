@@ -849,12 +849,23 @@ textarea {
   justify-content: space-between;
 }
 
+.checkpoint-edit-panel,
+.checkpoint-edit-section,
 .save-panel-heading div,
 .save-panel-section {
   display: grid;
   gap: 8px;
 }
 
+.checkpoint-edit-panel {
+  gap: 18px;
+}
+
+.checkpoint-edit-section {
+  gap: 10px;
+}
+
+.checkpoint-edit-section h3,
 .save-panel-heading h2,
 .save-panel-section h3 {
   margin: 0;

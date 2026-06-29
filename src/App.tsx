@@ -3040,10 +3040,13 @@ function App() {
           viewKey={`summary-${currentTrip.id}`}
         />
         <StatsGrid trip={currentTrip} />
-        {renderCheckpointManager(currentTrip, 'current', '체크포인트 관리')}
-        <section className="panel form-panel">
-          <h2>편집하기</h2>
-          <div className="save-panel-section">
+        <section className="panel checkpoint-edit-panel">
+          <h2>체크포인트 관리 및 편집</h2>
+          <div className="checkpoint-edit-section">
+            <h3>체크포인트 관리</h3>
+            {renderCheckpointList(currentTrip, 'current')}
+          </div>
+          <div className="checkpoint-edit-section">
             <h3>구간별 이동수단</h3>
             {renderSegmentTransportFields(currentTrip)}
           </div>
@@ -3154,100 +3157,96 @@ function App() {
     return (
       <section className="panel checkpoint-manager">
         <h2>{title}</h2>
-        <ol className="checkpoint-list checkpoint-edit-list">
-          {trip.checkpoints.map((checkpoint, index) => {
-            const isFixedEndpoint = isFixedEndpointCheckpoint(trip, index);
-            const canMergePrevious = canRemoveCheckpoint(trip, checkpoint.id) && index > 0;
-            const canMergeNext =
-              canRemoveCheckpoint(trip, checkpoint.id) && index < trip.checkpoints.length - 1;
+        {renderCheckpointList(trip, source)}
+      </section>
+    );
+  }
 
-            return (
-              <li className="checkpoint-edit-row" key={checkpoint.id}>
-                <span className="number-badge">{checkpoint.order + 1}</span>
-                <div className="checkpoint-edit-body">
-                  <div>
-                    <strong>{checkpoint.name || `체크포인트 ${index + 1}`}</strong>
-                    <span>
-                      {checkpoint.type ? checkpointTypeLabels[checkpoint.type] : '유형 없음'} ·{' '}
-                      {formatTime(checkpoint.recordedAt)}
-                    </span>
-                    {checkpoint.memo ? <p>{checkpoint.memo}</p> : null}
-                  </div>
+  function renderCheckpointList(trip: TripRecord, source: MapCheckpointEditorState['source']) {
+    return (
+      <ol className="checkpoint-list checkpoint-edit-list">
+        {trip.checkpoints.map((checkpoint, index) => {
+          const isFixedEndpoint = isFixedEndpointCheckpoint(trip, index);
+          const canMergePrevious = canRemoveCheckpoint(trip, checkpoint.id) && index > 0;
+          const canMergeNext =
+            canRemoveCheckpoint(trip, checkpoint.id) && index < trip.checkpoints.length - 1;
+
+          return (
+            <li className="checkpoint-edit-row" key={checkpoint.id}>
+              <span className="number-badge">{checkpoint.order + 1}</span>
+              <div className="checkpoint-edit-body">
+                <div>
+                  <strong>{checkpoint.name || `체크포인트 ${index + 1}`}</strong>
+                  <span>
+                    {checkpoint.type ? checkpointTypeLabels[checkpoint.type] : '유형 없음'} ·{' '}
+                    {formatTime(checkpoint.recordedAt)}
+                  </span>
+                  {checkpoint.memo ? <p>{checkpoint.memo}</p> : null}
                 </div>
-                <div className="checkpoint-action-column">
+              </div>
+              <div className="checkpoint-action-column">
+                <button
+                  aria-label="체크포인트 편집"
+                  className="checkpoint-icon-button"
+                  onClick={() =>
+                    source === 'current'
+                      ? openCurrentMapCheckpointEditor(checkpoint.id)
+                      : openSelectedMapCheckpointEditor(checkpoint.id)
+                  }
+                  title="편집"
+                  type="button"
+                >
+                  <Pencil aria-hidden="true" />
+                </button>
+                {!isFixedEndpoint ? (
                   <button
-                    aria-label="체크포인트 편집"
-                    className="checkpoint-icon-button"
+                    aria-label="체크포인트 삭제"
+                    className="checkpoint-icon-button danger"
                     onClick={() =>
-                      source === 'current'
-                        ? openCurrentMapCheckpointEditor(checkpoint.id)
-                        : openSelectedMapCheckpointEditor(checkpoint.id)
+                      confirmCheckpointStructureEdit(source, trip.id, checkpoint.id, 'delete')
                     }
-                    title="편집"
+                    title="삭제"
                     type="button"
                   >
-                    <Pencil aria-hidden="true" />
+                    <Trash2 aria-hidden="true" />
                   </button>
-                  {!isFixedEndpoint ? (
-                    <button
-                      aria-label="체크포인트 삭제"
-                      className="checkpoint-icon-button danger"
-                      onClick={() =>
-                        confirmCheckpointStructureEdit(
-                          source,
-                          trip.id,
-                          checkpoint.id,
-                          'delete',
-                        )
-                      }
-                      title="삭제"
-                      type="button"
-                    >
-                      <Trash2 aria-hidden="true" />
-                    </button>
-                  ) : null}
-                  {canMergePrevious ? (
-                    <button
-                      aria-label="이전 체크포인트와 병합"
-                      className="checkpoint-icon-button merge-previous"
-                      onClick={() =>
-                        confirmCheckpointStructureEdit(
-                          source,
-                          trip.id,
-                          checkpoint.id,
-                          'merge-previous',
-                        )
-                      }
-                      title="이전과 병합"
-                      type="button"
-                    >
-                      <ArrowUpToLine aria-hidden="true" />
-                    </button>
-                  ) : null}
-                  {canMergeNext ? (
-                    <button
-                      aria-label="다음 체크포인트와 병합"
-                      className="checkpoint-icon-button merge-next"
-                      onClick={() =>
-                        confirmCheckpointStructureEdit(
-                          source,
-                          trip.id,
-                          checkpoint.id,
-                          'merge-next',
-                        )
-                      }
-                      title="다음과 병합"
-                      type="button"
-                    >
-                      <ArrowDownToLine aria-hidden="true" />
-                    </button>
-                  ) : null}
-                </div>
-              </li>
-            );
-          })}
-        </ol>
-      </section>
+                ) : null}
+                {canMergePrevious ? (
+                  <button
+                    aria-label="이전 체크포인트와 병합"
+                    className="checkpoint-icon-button merge-previous"
+                    onClick={() =>
+                      confirmCheckpointStructureEdit(
+                        source,
+                        trip.id,
+                        checkpoint.id,
+                        'merge-previous',
+                      )
+                    }
+                    title="이전과 병합"
+                    type="button"
+                  >
+                    <ArrowUpToLine aria-hidden="true" />
+                  </button>
+                ) : null}
+                {canMergeNext ? (
+                  <button
+                    aria-label="다음 체크포인트와 병합"
+                    className="checkpoint-icon-button merge-next"
+                    onClick={() =>
+                      confirmCheckpointStructureEdit(source, trip.id, checkpoint.id, 'merge-next')
+                    }
+                    title="다음과 병합"
+                    type="button"
+                  >
+                    <ArrowDownToLine aria-hidden="true" />
+                  </button>
+                ) : null}
+              </div>
+            </li>
+          );
+        })}
+      </ol>
     );
   }
 
