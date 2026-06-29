@@ -3040,6 +3040,14 @@ function App() {
           viewKey={`summary-${currentTrip.id}`}
         />
         <StatsGrid trip={currentTrip} />
+        {renderCheckpointManager(currentTrip, 'current', '체크포인트 관리')}
+        <section className="panel form-panel">
+          <h2>편집하기</h2>
+          <div className="save-panel-section">
+            <h3>구간별 이동수단</h3>
+            {renderSegmentTransportFields(currentTrip)}
+          </div>
+        </section>
         <section className={`panel save-panel ${!validation.valid ? 'needs-attention' : ''}`}>
           <div className="save-panel-heading">
             <div>
@@ -3048,6 +3056,13 @@ function App() {
                 {validation.valid ? '저장 조건 충족' : '입력이 필요한 항목이 남았습니다.'}
               </p>
             </div>
+          </div>
+          {validationMessages.length > 0 ? renderValidationList(validationMessages) : null}
+          <div className="button-row save-panel-actions">
+            <button className="danger-button subtle" onClick={confirmDiscardCurrent} type="button">
+              <Trash2 aria-hidden="true" />
+              삭제
+            </button>
             <button
               className="primary-button"
               disabled={!validation.valid || tripSavePending}
@@ -3060,31 +3075,7 @@ function App() {
               {tripSavePending ? '저장 중...' : '완료 후 저장'}
             </button>
           </div>
-          {validationMessages.length > 0 ? renderValidationList(validationMessages) : null}
-          <div className="save-panel-section">
-            <h3>구간별 이동수단</h3>
-            {renderSegmentTransportFields(currentTrip)}
-          </div>
-          <div className="button-row">
-            <button
-              className="secondary-button"
-              onClick={() => {
-                setRecordingStatus('editing');
-                setShowCheckpointEditor(false);
-                setView('edit');
-              }}
-              type="button"
-            >
-              <Pencil aria-hidden="true" />
-              편집하기
-            </button>
-            <button className="danger-button subtle" onClick={confirmDiscardCurrent} type="button">
-              <Trash2 aria-hidden="true" />
-              삭제
-            </button>
-          </div>
         </section>
-        {renderCheckpointManager(currentTrip, 'current', '체크포인트 관리(선택)')}
       </section>
     );
   }

@@ -860,6 +860,10 @@ textarea {
   margin: 0;
 }
 
+.save-panel-actions {
+  justify-content: flex-end;
+}
+
 .save-missing-list {
   background: #fff5cf;
   border: 2px dashed #fb3b5f;
