@@ -102,10 +102,6 @@ export function validateTripBeforeSave(trip: TripRecord): ValidationResult {
     errors.push('체크포인트가 최소 2개 이상 필요합니다.');
   }
 
-  if (trip.checkpoints.some((checkpoint) => checkpoint.name.trim().length === 0)) {
-    errors.push('모든 체크포인트 이름을 입력해주세요.');
-  }
-
   if (trip.segments.some((segment) => segment.transportMode === null)) {
     errors.push('모든 구간의 이동수단을 지정해주세요.');
   }

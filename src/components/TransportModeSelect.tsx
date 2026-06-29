@@ -5,13 +5,23 @@ interface TransportModeSelectProps {
   id: string;
   value: TransportMode | null;
   onChange: (value: TransportMode) => void;
+  describedBy?: string;
+  invalid?: boolean;
 }
 
 const modes = Object.keys(transportModeLabels) as TransportMode[];
 
-export function TransportModeSelect({ id, value, onChange }: TransportModeSelectProps) {
+export function TransportModeSelect({
+  describedBy,
+  id,
+  invalid = false,
+  value,
+  onChange,
+}: TransportModeSelectProps) {
   return (
     <select
+      aria-describedby={describedBy}
+      aria-invalid={invalid}
       id={id}
       onChange={(event) => onChange(event.target.value as TransportMode)}
       value={value ?? ''}

@@ -741,6 +741,22 @@ textarea {
   padding: 12px;
 }
 
+.editor-item.needs-attention {
+  background: #fff1f4;
+  border-color: #fb3b5f;
+}
+
+.editor-item.needs-attention select {
+  border-color: #fb3b5f;
+  box-shadow: 0 0 0 3px rgb(251 59 95 / 18%);
+}
+
+.field-warning {
+  color: #a91535;
+  font-size: 0.9rem;
+  font-weight: 900;
+}
+
 .editor-heading,
 .segment-row,
 .checkpoint-list li,
@@ -815,6 +831,44 @@ textarea {
   bottom: 0;
   position: sticky;
   z-index: 400;
+}
+
+.save-panel {
+  gap: 16px;
+}
+
+.save-panel.needs-attention {
+  border-color: #fb3b5f;
+  box-shadow: 4px 4px 0 #a91535;
+}
+
+.save-panel-heading {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.save-panel-heading div,
+.save-panel-section {
+  display: grid;
+  gap: 8px;
+}
+
+.save-panel-heading h2,
+.save-panel-section h3 {
+  margin: 0;
+}
+
+.save-missing-list {
+  background: #fff5cf;
+  border: 2px dashed #fb3b5f;
+  border-radius: 8px;
+  color: #17211f;
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 12px 12px 12px 32px;
 }
 
 .editor-tools {
@@ -1357,6 +1411,15 @@ textarea {
 
   .app-header {
     align-items: flex-start;
+  }
+
+  .save-panel-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .save-panel-heading .primary-button {
+    width: 100%;
   }
 
   .brand-button span {

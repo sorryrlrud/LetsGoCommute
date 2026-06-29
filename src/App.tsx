@@ -161,6 +161,7 @@ const DEV_DUMMY_MAX_COUNT = 8;
 
 type PlaceSaveAction = 'start' | 'end' | 'checkpoint';
 type RecordingActionPending = 'checkpoint' | 'finish' | null;
+const MISSING_TRANSPORT_MODE_ERROR = '모든 구간의 이동수단을 지정해주세요.';
 
 const DEV_ROUTE_POINTS: DevRoutePoint[] = [
   {
@@ -760,6 +761,22 @@ function getSegmentLabel(segment: Segment, checkpoints: Checkpoint[]) {
   return `${from?.name || '출발 체크'} → ${to?.name || '도착 체크'}`;
 }
 
+function getMissingTransportSegments(trip: TripRecord) {
+  return trip.segments.filter((segment) => segment.transportMode === null);
+}
+
+function getTripSaveValidationMessages(trip: TripRecord, errors: string[]) {
+  return errors.flatMap((error) => {
+    if (error !== MISSING_TRANSPORT_MODE_ERROR) {
+      return [error];
+    }
+
+    return getMissingTransportSegments(trip).map(
+      (segment) => `${getSegmentLabel(segment, trip.checkpoints)} 이동수단을 선택해주세요.`,
+    );
+  });
+}
+
 function findCheckpointPlaceMatch(
   point: GpsPoint,
   places: SavedCheckpointPlace[],
@@ -979,6 +996,10 @@ function App() {
   const validation = useMemo(
     () => (currentTrip ? validateTripBeforeSave(currentTrip) : { valid: false, errors: [] }),
     [currentTrip],
+  );
+  const validationMessages = useMemo(
+    () => (currentTrip ? getTripSaveValidationMessages(currentTrip, validation.errors) : []),
+    [currentTrip, validation.errors],
   );
 
   useEffect(() => {
@@ -3019,53 +3040,51 @@ function App() {
           viewKey={`summary-${currentTrip.id}`}
         />
         <StatsGrid trip={currentTrip} />
-        <section className="panel">
-          <h2>구간별 소요 시간</h2>
-          <SegmentSummary checkpoints={currentTrip.checkpoints} segments={currentTrip.segments} />
-        </section>
-        {renderCheckpointManager(currentTrip, 'current', '체크포인트 관리')}
-        {!validation.valid ? (
-          <section className="validation-box" role="alert">
-            <AlertCircle aria-hidden="true" />
+        <section className={`panel save-panel ${!validation.valid ? 'needs-attention' : ''}`}>
+          <div className="save-panel-heading">
             <div>
-              <strong>완료 전 확인</strong>
-              <ul>
-                {validation.errors.map((error) => (
-                  <li key={error}>{error}</li>
-                ))}
-              </ul>
+              <h2>완료 후 저장</h2>
+              <p className={validation.valid ? 'muted' : 'field-warning'}>
+                {validation.valid ? '저장 조건 충족' : '입력이 필요한 항목이 남았습니다.'}
+              </p>
             </div>
-          </section>
-        ) : null}
-        <div className="button-row">
-          <button
-            className="primary-button"
-            disabled={!validation.valid || tripSavePending}
-            onClick={() => {
-              void saveCurrentTrip();
-            }}
-            type="button"
-          >
-            <Check aria-hidden="true" />
-            {tripSavePending ? '저장 중...' : '완료'}
-          </button>
-          <button
-            className="secondary-button"
-            onClick={() => {
-              setRecordingStatus('editing');
-              setShowCheckpointEditor(false);
-              setView('edit');
-            }}
-            type="button"
-          >
-            <Pencil aria-hidden="true" />
-            편집하기
-          </button>
-          <button className="danger-button subtle" onClick={confirmDiscardCurrent} type="button">
-            <Trash2 aria-hidden="true" />
-            삭제
-          </button>
-        </div>
+            <button
+              className="primary-button"
+              disabled={!validation.valid || tripSavePending}
+              onClick={() => {
+                void saveCurrentTrip();
+              }}
+              type="button"
+            >
+              <Check aria-hidden="true" />
+              {tripSavePending ? '저장 중...' : '완료 후 저장'}
+            </button>
+          </div>
+          {validationMessages.length > 0 ? renderValidationList(validationMessages) : null}
+          <div className="save-panel-section">
+            <h3>구간별 이동수단</h3>
+            {renderSegmentTransportFields(currentTrip)}
+          </div>
+          <div className="button-row">
+            <button
+              className="secondary-button"
+              onClick={() => {
+                setRecordingStatus('editing');
+                setShowCheckpointEditor(false);
+                setView('edit');
+              }}
+              type="button"
+            >
+              <Pencil aria-hidden="true" />
+              편집하기
+            </button>
+            <button className="danger-button subtle" onClick={confirmDiscardCurrent} type="button">
+              <Trash2 aria-hidden="true" />
+              삭제
+            </button>
+          </div>
+        </section>
+        {renderCheckpointManager(currentTrip, 'current', '체크포인트 관리(선택)')}
       </section>
     );
   }
@@ -3084,25 +3103,7 @@ function App() {
 
         <section className="panel form-panel">
           <h2>구간별 이동수단</h2>
-          <div className="editor-list">
-            {currentTrip.segments.map((segment, index) => (
-              <article className="editor-item compact" key={segment.id}>
-                <div className="editor-heading">
-                  <span className="number-badge">{index + 1}</span>
-                  <strong>{getSegmentLabel(segment, currentTrip.checkpoints)}</strong>
-                </div>
-                <p className="muted">{formatDuration(segment.durationMs)}</p>
-                <label htmlFor={`segment-mode-${segment.id}`}>
-                  이동수단
-                  <TransportModeSelect
-                    id={`segment-mode-${segment.id}`}
-                    onChange={(transportMode) => updateSegment(segment.id, { transportMode })}
-                    value={segment.transportMode}
-                  />
-                </label>
-              </article>
-            ))}
-          </div>
+          {renderSegmentTransportFields(currentTrip)}
         </section>
 
         <div className="button-row editor-tools">
@@ -3126,7 +3127,7 @@ function App() {
             <div>
               <strong>저장 전 확인</strong>
               <ul>
-                {validation.errors.map((error) => (
+                {validationMessages.map((error) => (
                   <li key={error}>{error}</li>
                 ))}
               </ul>
@@ -3256,6 +3257,59 @@ function App() {
           })}
         </ol>
       </section>
+    );
+  }
+
+  function renderValidationList(messages: string[]) {
+    return (
+      <ul className="save-missing-list" role="alert">
+        {messages.map((message) => (
+          <li key={message}>{message}</li>
+        ))}
+      </ul>
+    );
+  }
+
+  function renderSegmentTransportFields(trip: TripRecord) {
+    if (trip.segments.length === 0) {
+      return <p className="muted">아직 생성된 구간이 없습니다.</p>;
+    }
+
+    return (
+      <div className="editor-list">
+        {trip.segments.map((segment, index) => {
+          const needsTransportMode = segment.transportMode === null;
+          const warningId = `segment-mode-warning-${segment.id}`;
+
+          return (
+            <article
+              className={`editor-item compact ${needsTransportMode ? 'needs-attention' : ''}`}
+              key={segment.id}
+            >
+              <div className="editor-heading">
+                <span className="number-badge">{index + 1}</span>
+                <strong>{getSegmentLabel(segment, trip.checkpoints)}</strong>
+              </div>
+              <p className="muted">{formatDuration(segment.durationMs)}</p>
+              <label htmlFor={`segment-mode-${segment.id}`}>
+                이동수단
+                <TransportModeSelect
+                  describedBy={needsTransportMode ? warningId : undefined}
+                  id={`segment-mode-${segment.id}`}
+                  invalid={needsTransportMode}
+                  onChange={(transportMode) => updateSegment(segment.id, { transportMode })}
+                  value={segment.transportMode}
+                />
+              </label>
+              {needsTransportMode ? (
+                <small className="field-warning" id={warningId}>
+                  이 구간의 이동수단을 선택해주세요.
+                </small>
+              ) : null}
+            </article>
+          );
+        })}
+      </div>
     );
   }
 
