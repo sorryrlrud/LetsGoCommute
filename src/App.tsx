@@ -3041,15 +3041,8 @@ function App() {
         />
         <StatsGrid trip={currentTrip} />
         <section className="panel checkpoint-edit-panel">
-          <h2>체크포인트 관리 및 편집</h2>
-          <div className="checkpoint-edit-section">
-            <h3>체크포인트 관리</h3>
-            {renderCheckpointList(currentTrip, 'current')}
-          </div>
-          <div className="checkpoint-edit-section">
-            <h3>구간별 이동수단</h3>
-            {renderSegmentTransportFields(currentTrip)}
-          </div>
+          <h2>체크포인트 및 구간 편집</h2>
+          {renderCheckpointList(currentTrip, 'current', { showSegmentTransport: true })}
         </section>
         <section className={`panel save-panel ${!validation.valid ? 'needs-attention' : ''}`}>
           <div className="save-panel-heading">
@@ -3095,25 +3088,10 @@ function App() {
           <h1>구간별 이동수단 입력</h1>
         </div>
 
-        <section className="panel form-panel">
-          <h2>구간별 이동수단</h2>
-          {renderSegmentTransportFields(currentTrip)}
+        <section className="panel checkpoint-edit-panel">
+          <h2>체크포인트 및 구간 편집</h2>
+          {renderCheckpointList(currentTrip, 'current', { showSegmentTransport: true })}
         </section>
-
-        <div className="button-row editor-tools">
-          <button
-            className="secondary-button"
-            onClick={() => setShowCheckpointEditor((visible) => !visible)}
-            type="button"
-          >
-            <Pencil aria-hidden="true" />
-            {showCheckpointEditor ? '체크포인트 접기' : '체크포인트 편집'}
-          </button>
-        </div>
-
-        {showCheckpointEditor ? (
-          renderCheckpointManager(currentTrip, 'current', '체크포인트 편집')
-        ) : null}
 
         {!validation.valid ? (
           <section className="validation-box" role="alert">
@@ -3162,7 +3140,11 @@ function App() {
     );
   }
 
-  function renderCheckpointList(trip: TripRecord, source: MapCheckpointEditorState['source']) {
+  function renderCheckpointList(
+    trip: TripRecord,
+    source: MapCheckpointEditorState['source'],
+    options: { showSegmentTransport?: boolean } = {},
+  ) {
     return (
       <ol className="checkpoint-list checkpoint-edit-list">
         {trip.checkpoints.map((checkpoint, index) => {
@@ -3170,9 +3152,19 @@ function App() {
           const canMergePrevious = canRemoveCheckpoint(trip, checkpoint.id) && index > 0;
           const canMergeNext =
             canRemoveCheckpoint(trip, checkpoint.id) && index < trip.checkpoints.length - 1;
+          const incomingSegment = options.showSegmentTransport
+            ? trip.segments.find((segment) => segment.toCheckpointId === checkpoint.id)
+            : null;
+          const needsTransportMode = incomingSegment?.transportMode === null;
+          const transportWarningId = incomingSegment
+            ? `checkpoint-segment-mode-warning-${incomingSegment.id}`
+            : undefined;
 
           return (
-            <li className="checkpoint-edit-row" key={checkpoint.id}>
+            <li
+              className={`checkpoint-edit-row ${needsTransportMode ? 'needs-attention' : ''}`}
+              key={checkpoint.id}
+            >
               <span className="number-badge">{checkpoint.order + 1}</span>
               <div className="checkpoint-edit-body">
                 <div>
@@ -3183,6 +3175,30 @@ function App() {
                   </span>
                   {checkpoint.memo ? <p>{checkpoint.memo}</p> : null}
                 </div>
+                {incomingSegment ? (
+                  <div className="checkpoint-segment-editor">
+                    <span className="muted">
+                      이전 구간 · {formatDuration(incomingSegment.durationMs)}
+                    </span>
+                    <label htmlFor={`checkpoint-segment-mode-${incomingSegment.id}`}>
+                      이동수단
+                      <TransportModeSelect
+                        describedBy={needsTransportMode ? transportWarningId : undefined}
+                        id={`checkpoint-segment-mode-${incomingSegment.id}`}
+                        invalid={needsTransportMode}
+                        onChange={(transportMode) =>
+                          updateSegment(incomingSegment.id, { transportMode })
+                        }
+                        value={incomingSegment.transportMode}
+                      />
+                    </label>
+                    {needsTransportMode && transportWarningId ? (
+                      <small className="field-warning" id={transportWarningId}>
+                        이 구간의 이동수단을 선택해주세요.
+                      </small>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
               <div className="checkpoint-action-column">
                 <button
@@ -3257,49 +3273,6 @@ function App() {
           <li key={message}>{message}</li>
         ))}
       </ul>
-    );
-  }
-
-  function renderSegmentTransportFields(trip: TripRecord) {
-    if (trip.segments.length === 0) {
-      return <p className="muted">아직 생성된 구간이 없습니다.</p>;
-    }
-
-    return (
-      <div className="editor-list">
-        {trip.segments.map((segment, index) => {
-          const needsTransportMode = segment.transportMode === null;
-          const warningId = `segment-mode-warning-${segment.id}`;
-
-          return (
-            <article
-              className={`editor-item compact ${needsTransportMode ? 'needs-attention' : ''}`}
-              key={segment.id}
-            >
-              <div className="editor-heading">
-                <span className="number-badge">{index + 1}</span>
-                <strong>{getSegmentLabel(segment, trip.checkpoints)}</strong>
-              </div>
-              <p className="muted">{formatDuration(segment.durationMs)}</p>
-              <label htmlFor={`segment-mode-${segment.id}`}>
-                이동수단
-                <TransportModeSelect
-                  describedBy={needsTransportMode ? warningId : undefined}
-                  id={`segment-mode-${segment.id}`}
-                  invalid={needsTransportMode}
-                  onChange={(transportMode) => updateSegment(segment.id, { transportMode })}
-                  value={segment.transportMode}
-                />
-              </label>
-              {needsTransportMode ? (
-                <small className="field-warning" id={warningId}>
-                  이 구간의 이동수단을 선택해주세요.
-                </small>
-              ) : null}
-            </article>
-          );
-        })}
-      </div>
     );
   }
 

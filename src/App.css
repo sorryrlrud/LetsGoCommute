@@ -850,7 +850,6 @@ textarea {
 }
 
 .checkpoint-edit-panel,
-.checkpoint-edit-section,
 .save-panel-heading div,
 .save-panel-section {
   display: grid;
@@ -861,11 +860,6 @@ textarea {
   gap: 18px;
 }
 
-.checkpoint-edit-section {
-  gap: 10px;
-}
-
-.checkpoint-edit-section h3,
 .save-panel-heading h2,
 .save-panel-section h3 {
   margin: 0;
@@ -884,10 +878,6 @@ textarea {
   gap: 6px;
   margin: 0;
   padding: 12px 12px 12px 32px;
-}
-
-.editor-tools {
-  justify-content: flex-end;
 }
 
 .trip-card {
@@ -970,10 +960,38 @@ textarea {
   padding-bottom: 0;
 }
 
+.checkpoint-edit-row.needs-attention {
+  background: #fff1f4;
+  border: 2px dashed #fb3b5f;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.checkpoint-edit-row.needs-attention select {
+  border-color: #fb3b5f;
+  box-shadow: 0 0 0 3px rgb(251 59 95 / 18%);
+}
+
 .checkpoint-edit-body {
   display: grid;
   gap: 10px;
   min-width: 0;
+}
+
+.checkpoint-segment-editor {
+  background: #f9fbf7;
+  border: 1px solid #dce4e1;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.checkpoint-segment-editor label {
+  color: #17211f;
+  display: grid;
+  font-weight: 900;
+  gap: 6px;
 }
 
 .checkpoint-action-column {
@@ -1435,6 +1453,17 @@ textarea {
 
   .save-panel-heading .primary-button {
     width: 100%;
+  }
+
+  .checkpoint-edit-row,
+  .checkpoint-edit-row.needs-attention {
+    align-items: flex-start;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .checkpoint-action-column {
+    grid-column: 2;
+    justify-content: start;
   }
 
   .brand-button span {
